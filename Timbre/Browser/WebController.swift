@@ -51,9 +51,6 @@ struct EngineStatus: Equatable {
 struct PopupItem: Identifiable {
     let id = UUID()
     let webView: WKWebView
-    private(set) var vault: CookieVault!
-    private var ready = false
-    private var pendingLoads: [URLRequest] = []
 }
 
 private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
@@ -76,6 +73,9 @@ final class WebController: NSObject, ObservableObject {
     @Published var popup: PopupItem?
 
     let webView: WKWebView
+    private(set) var vault: CookieVault!
+    private var ready = false
+    private var pendingLoads: [URLRequest] = []
     var desktopMode = false
     var onSpectrum: (([Float]) -> Void)?
     var onSampleRate: ((Double) -> Void)?
