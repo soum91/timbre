@@ -1,0 +1,41 @@
+{
+  "name": "Timbre by soum91",
+  "identifier": "io.github.soum91.timbre",
+  "subtitle": "Browser with a system-style EQ",
+  "description": "Web browser with an EQE-style audio engine for streaming sites: open-ended parametric EQ, reverb, spatial sound and effects.",
+  "iconURL": "https://raw.githubusercontent.com/soum91/timbre/main/Timbre/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+  "website": "https://github.com/soum91/timbre",
+  "sourceURL": "https://raw.githubusercontent.com/soum91/timbre/source/source.json",
+  "tintColor": "AF52DE",
+  "apps": [
+    {
+      "name": "Timbre",
+      "bundleIdentifier": "com.soum91.timbre",
+      "developerName": "soum91",
+      "subtitle": "Browser with a system-style EQ",
+      "localizedDescription": "Web browser with an EQE-style audio engine for streaming sites: open-ended parametric EQ, reverb, spatial sound and effects.",
+      "iconURL": "https://raw.githubusercontent.com/soum91/timbre/main/Timbre/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+      "tintColor": "AF52DE",
+      "category": "music",
+      "screenshotURLs": [],
+      "versions": [
+        {
+          "version": "1.0",
+          "buildVersion": "3",
+          "date": "2026-10-20T18:47:46Z",
+          "localizedDescription": "- CI: build number in IPA file names and changelog in release notes (de2cef4)\n- Compatibility mode: hide MediaSource so iOS WebKit can EQ YouTube; fix silent-stream diagnosis (5c21ab2)\n- Timbre: browser with parametric EQ, spatial, reverb and effects engine (43e60cd)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-3/Timbre-1.0-build-3.ipa",
+          "size": 688904,
+          "minOSVersion": "16.0"
+        }
+      ],
+      "version": "1.0",
+      "versionDate": "2026-10-20T18:47:46Z",
+      "versionDescription": "- CI: build number in IPA file names and changelog in release notes (de2cef4)\n- Compatibility mode: hide MediaSource so iOS WebKit can EQ YouTube; fix silent-stream diagnosis (5c21ab2)\n- Timbre: browser with parametric EQ, spatial, reverb and effects engine (43e60cd)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-3/Timbre-1.0-build-3.ipa",
+      "size": 688904,
+      "appPermissions": {}
+    }
+  ],
+  "news": []
+}
