@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.9",
+          "buildVersion": "9",
+          "date": "2026-10-20T20:32:37Z",
+          "localizedDescription": "- Fix cookie vault properties landing in PopupItem (096fe00)\n- CI: fail the build step when the app binary is missing and surface compiler errors (cc66647)\n- CI: report the failing packaging command as an annotation (711c89a)\n- Keep sign-ins: persist session cookies across restarts (fixes Amazon logouts) (d72c509)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-9/Timbre-1.0-build-9.ipa",
+          "size": 712198,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.5",
           "buildVersion": "5",
           "date": "2026-10-20T20:24:33Z",
@@ -47,11 +56,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.5",
-      "versionDate": "2026-10-20T20:24:33Z",
-      "versionDescription": "- CI: version string carries the build number (<version>.<build>) (b711260)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-5/Timbre-1.0-build-5.ipa",
-      "size": 688904,
+      "version": "1.0.9",
+      "versionDate": "2026-10-20T20:32:37Z",
+      "versionDescription": "- Fix cookie vault properties landing in PopupItem (096fe00)\n- CI: fail the build step when the app binary is missing and surface compiler errors (cc66647)\n- CI: report the failing packaging command as an annotation (711c89a)\n- Keep sign-ins: persist session cookies across restarts (fixes Amazon logouts) (d72c509)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-9/Timbre-1.0-build-9.ipa",
+      "size": 712198,
       "appPermissions": {}
     }
   ],
