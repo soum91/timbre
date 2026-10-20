@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.11",
+          "buildVersion": "11",
+          "date": "2026-10-20T21:04:00Z",
+          "localizedDescription": "- User agent presets (Safari, Chrome, Firefox, Edge) and custom string (3889ecd)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-11/Timbre-1.0-build-11.ipa",
+          "size": 866981,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.10",
           "buildVersion": "10",
           "date": "2026-10-20T20:54:20Z",
@@ -65,11 +74,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.10",
-      "versionDate": "2026-10-20T20:54:20Z",
-      "versionDescription": "- AirPlay picker, Live Activity, Now Playing widget and lock screen controls (65df300)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-10/Timbre-1.0-build-10.ipa",
-      "size": 854344,
+      "version": "1.0.11",
+      "versionDate": "2026-10-20T21:04:00Z",
+      "versionDescription": "- User agent presets (Safari, Chrome, Firefox, Edge) and custom string (3889ecd)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-11/Timbre-1.0-build-11.ipa",
+      "size": 866981,
       "appPermissions": {}
     }
   ],
