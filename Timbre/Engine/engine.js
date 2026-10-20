@@ -720,7 +720,8 @@
     if (d.__timbreCfg) api.apply(d.__timbreCfg);
     else if (d.__timbreIR) api.setIR(d.__timbreIR.id, d.__timbreIR.b64);
     else if (d.__timbreReport) api.report();
-    else if (d.__timbreCmd && window !== window.top) command(d.__timbreCmd);
+    // add-on bridge delivers commands to the top frame by message; WebKit calls command() directly
+    else if (d.__timbreCmd && (window !== window.top || boot.bridge)) command(d.__timbreCmd);
   });
 
   var origEnsure = ensureCtx;
