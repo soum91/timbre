@@ -1,0 +1,26 @@
+name: Backfill release build numbers and changelogs
+
+# One-off. Run it from the Actions tab: turns the rolling "latest" prerelease
+# into "Timbre 1.0 build 2" (tag build-2), renames its IPA to
+# Timbre-1.0-build-2.ipa and writes a changelog into the notes.
+# Safe to run again. Delete this file once it has run.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APP: Timbre
+      ROLLING: "2:43e60cd"
+      INSTALL: Unsigned IPA. Sideload with TrollStore, AltStore, Sideloadly or SideStore.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 .github/scripts/backfill-releases.py
