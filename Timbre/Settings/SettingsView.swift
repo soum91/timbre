@@ -10,10 +10,20 @@ struct SettingsView: View {
                 Section {
                     Toggle("Keep playing in background", isOn: $model.backgroundPlay)
                     Toggle("Desktop sites by default", isOn: $model.desktopMode)
+                    Picker("User agent", selection: $model.uaPreset) {
+                        ForEach(UAPreset.allCases) { Text($0.label).tag($0) }
+                    }
+                    if model.uaPreset == .custom {
+                        TextField("Mozilla/5.0 (...)", text: $model.customUA, axis: .vertical)
+                            .font(.footnote.monospaced())
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .lineLimit(2...5)
+                    }
                     Toggle("Live spectrum on EQ graph", isOn: $model.config.spectrum)
                     LiveActivityToggle(center: model.nowPlaying)
                 } footer: {
-                    Text("Background mode tells pages they're always visible, so players like YouTube Music don't pause when you lock the phone. Takes effect on reload.")
+                    Text("Background mode tells pages they're always visible, so players like YouTube Music don't pause when you lock the phone. Takes effect on reload. Chrome or Firefox user agents can make DRM sites expect Widevine, which WebKit doesn't have, so Amazon/Spotify may refuse to play with them.")
                 }
 
                 Section {

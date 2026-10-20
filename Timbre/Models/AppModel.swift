@@ -25,6 +25,26 @@ final class AppModel: ObservableObject {
             syncNowPlayingEQ()
         }
     }
+    @Published var uaPreset: UAPreset {
+        didSet { UserDefaults.standard.set(uaPreset.rawValue, forKey: "timbre.uaPreset"); applyUA() }
+    }
+    @Published var customUA: String {
+        didSet {
+            UserDefaults.standard.set(customUA, forKey: "timbre.customUA")
+            guard uaPreset == .custom else { return }
+            uaWork?.cancel()
+            let w = DispatchWorkItem { [weak self] in self?.applyUA() }
+            uaWork = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
+        }
+    }
+    private var uaWork: DispatchWorkItem?
+
+    private func applyUA() {
+        web.userAgentOverride = uaPreset == .custom ? customUA : uaPreset.string
+        web.applyUserAgent(reload: true)
+    }
+
     @Published var desktopMode: Bool {
         didSet {
             UserDefaults.standard.set(desktopMode, forKey: Keys.desktop)
@@ -64,10 +84,13 @@ final class AppModel: ObservableObject {
         presets = Self.load([Preset].self, key: Keys.presets) ?? []
         activePresetName = d.string(forKey: Keys.activeName)
         desktopMode = d.bool(forKey: Keys.desktop)
+        uaPreset = UAPreset(rawValue: d.string(forKey: "timbre.uaPreset") ?? "") ?? .automatic
+        customUA = d.string(forKey: "timbre.customUA") ?? ""
         backgroundPlay = d.object(forKey: Keys.background) as? Bool ?? true
         disabledHosts = Self.load([String].self, key: Keys.disabled) ?? []
         compatHosts = Self.load([String].self, key: Keys.compat) ?? ["youtube.com"]
 
+        web.userAgentOverride = uaPreset == .custom ? customUA : uaPreset.string
         web.setDesktop(desktopMode, reload: false)
         web.onSpectrum = { [weak self] b in self?.spectrum.update(b) }
         web.onSampleRate = { [weak self] r in if self?.sampleRate != r { self?.sampleRate = r } }
@@ -321,5 +344,38 @@ final class AppModel: ObservableObject {
     private func sendIR(_ id: String) {
         guard let f = irFile(id), let data = try? Data(contentsOf: f) else { return }
         web.sendIR(id: id, base64: data.base64EncodedString())
+    }
+}
+
+enum UAPreset: String, CaseIterable, Identifiable {
+    case automatic, safariMac, chromeWindows, chromeMac, chromeAndroid, firefoxWindows, firefoxAndroid, edgeWindows, custom
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .automatic: return "Automatic (Safari)"
+        case .safariMac: return "Safari · Mac"
+        case .chromeWindows: return "Chrome · Windows"
+        case .chromeMac: return "Chrome · Mac"
+        case .chromeAndroid: return "Chrome · Android"
+        case .firefoxWindows: return "Firefox · Windows"
+        case .firefoxAndroid: return "Firefox · Android"
+        case .edgeWindows: return "Edge · Windows"
+        case .custom: return "Custom"
+        }
+    }
+
+    /// nil = let WebController pick the Safari string for mobile/desktop mode.
+    var string: String? {
+        switch self {
+        case .automatic, .custom: return nil
+        case .safariMac: return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+        case .chromeWindows: return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+        case .chromeMac: return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+        case .chromeAndroid: return "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36"
+        case .firefoxWindows: return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
+        case .firefoxAndroid: return "Mozilla/5.0 (Android 14; Mobile; rv:144.0) Gecko/144.0 Firefox/144.0"
+        case .edgeWindows: return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0"
+        }
     }
 }

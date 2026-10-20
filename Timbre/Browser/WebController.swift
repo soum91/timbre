@@ -142,9 +142,18 @@ final class WebController: NSObject, ObservableObject {
         return "Mozilla/5.0 (\(device) \(os) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(major).\(minor) Mobile/15E148 Safari/604.1"
     }
 
+    /// nil = automatic Safari string (mobile or desktop).
+    var userAgentOverride: String?
+
     func setDesktop(_ on: Bool, reload: Bool) {
         desktopMode = on
-        webView.customUserAgent = Self.userAgent(desktop: on)
+        applyUserAgent(reload: reload)
+    }
+
+    func applyUserAgent(reload: Bool) {
+        let ua = userAgentOverride.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 } ?? Self.userAgent(desktop: desktopMode)
+        guard webView.customUserAgent != ua else { return }
+        webView.customUserAgent = ua
         if reload, webView.url != nil { webView.reload() }
     }
 
