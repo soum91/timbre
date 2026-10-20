@@ -19,7 +19,12 @@ final class SpectrumModel: ObservableObject {
 final class AppModel: ObservableObject {
     @Published var config: DSPConfig { didSet { if config != oldValue { configChanged() } } }
     @Published var presets: [Preset] { didSet { save(presets, key: Keys.presets) } }
-    @Published var activePresetName: String? { didSet { UserDefaults.standard.set(activePresetName, forKey: Keys.activeName) } }
+    @Published var activePresetName: String? {
+        didSet {
+            UserDefaults.standard.set(activePresetName, forKey: Keys.activeName)
+            syncNowPlayingEQ()
+        }
+    }
     @Published var desktopMode: Bool {
         didSet {
             UserDefaults.standard.set(desktopMode, forKey: Keys.desktop)
@@ -41,6 +46,7 @@ final class AppModel: ObservableObject {
     let web = WebController()
     let spectrum = SpectrumModel()
     let autoEq = AutoEqIndex()
+    let nowPlaying = NowPlayingCenter()
     @Published private(set) var sampleRate: Double = 48000
 
     private enum Keys {
@@ -68,6 +74,13 @@ final class AppModel: ObservableObject {
         web.onNeedIR = { [weak self] id in self?.sendIR(id) }
         web.onIRError = { [weak self] _ in self?.toast = "Couldn't decode that impulse response." }
         web.installScripts(config: config, disabledHosts: disabledHosts, compatHosts: compatHosts, background: backgroundPlay)
+        web.onNowPlaying = { [weak self] body, site in self?.nowPlaying.ingest(body, site: site) }
+        web.onPageChanged = { [weak self] in self?.nowPlaying.pageChanged() }
+        CommandBus.handler = { [weak self] cmd in self?.handleCommand(cmd) }
+        Self.listenForWidgetCommands()
+        syncNowPlayingEQ()
+        drainPendingCommand()
+        AppModel.shared = self
     }
 
     // MARK: persistence
@@ -81,7 +94,32 @@ final class AppModel: ObservableObject {
         if let data = try? JSONEncoder().encode(v) { UserDefaults.standard.set(data, forKey: key) }
     }
 
+    // MARK: widget / Live Activity commands
+
+    func handleCommand(_ cmd: String) {
+        if cmd == "eq" { config.enabled.toggle() } else { web.command(cmd) }
+    }
+
+    func drainPendingCommand() {
+        guard let d = SharedStore.defaults, let cmd = d.string(forKey: "pendingCommand") else { return }
+        d.removeObject(forKey: "pendingCommand")
+        handleCommand(cmd)
+    }
+
+    private func syncNowPlayingEQ() {
+        nowPlaying.setEQ(on: config.enabled, preset: activePresetName ?? "Custom")
+    }
+
+    private static func listenForWidgetCommands() {
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil, { _, _, _, _, _ in
+            Task { @MainActor in AppModel.shared?.drainPendingCommand() }
+        }, SharedStore.darwinCommand as CFString, nil, .deliverImmediately)
+    }
+
+    static weak var shared: AppModel?
+
     private func configChanged() {
+        syncNowPlayingEQ()
         // live push, throttled to ~30 Hz while dragging
         if !pushScheduled {
             pushScheduled = true

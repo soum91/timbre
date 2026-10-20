@@ -81,6 +81,8 @@ final class WebController: NSObject, ObservableObject {
     var onSampleRate: ((Double) -> Void)?
     var onNeedIR: ((String) -> Void)?
     var onIRError: ((String) -> Void)?
+    var onNowPlaying: (([String: Any], String) -> Void)?
+    var onPageChanged: (() -> Void)?
 
     private var frameStates: [String: EngineStatus] = [:]
     private var observers: [NSKeyValueObservation] = []
@@ -202,6 +204,12 @@ final class WebController: NSObject, ObservableObject {
     }
 
     func saveSession() async { await vault.save() }
+
+    /// play / pause / toggle / next / prev, routed to the page's media session handlers.
+    func command(_ cmd: String) {
+        guard ["play", "pause", "toggle", "next", "prev"].contains(cmd) else { return }
+        webView.evaluateJavaScript("window.__timbre&&window.__timbre.command('\(cmd)');", completionHandler: nil)
+    }
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
     func reload() { webView.reload() }
@@ -245,6 +253,8 @@ extension WebController: WKScriptMessageHandler {
                     self.recomputeStatus()
                 }
                 if rate > 0 { self.onSampleRate?(rate) }
+            case "nowplaying":
+                self.onNowPlaying?(body, self.webView.url?.host ?? (body["frame"] as? String ?? ""))
             case "needIR":
                 if let id = id { self.onNeedIR?(id) }
             case "irError":
@@ -275,6 +285,7 @@ extension WebController: WKNavigationDelegate {
         guard webView === self.webView else { return }
         frameStates.removeAll()
         recomputeStatus()
+        onPageChanged?()
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

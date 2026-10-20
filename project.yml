@@ -19,6 +19,13 @@ targets:
           - "Engine/engine.js"
       - path: Timbre/Engine/engine.js
         buildPhase: resources
+      - path: Shared
+    dependencies:
+      - target: TimbreWidget
+    entitlements:
+      path: Timbre/Timbre.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.soum91.timbre]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.soum91.timbre
@@ -46,3 +53,33 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
         LSSupportsOpeningDocumentsInPlace: false
+        NSSupportsLiveActivities: true
+  TimbreWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: TimbreWidget
+      - path: Shared
+    info:
+      path: TimbreWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Timbre
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: TimbreWidget/TimbreWidget.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.soum91.timbre]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.soum91.timbre.widget
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""

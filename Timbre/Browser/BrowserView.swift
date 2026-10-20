@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import AVKit
 
 struct Site: Identifiable {
     let name: String
@@ -138,6 +139,8 @@ private struct BrowserContent: View {
                 .disabled(!web.canGoForward).frame(maxWidth: .infinity)
             Button { quickEQ = true } label: { StatusPill(status: web.status, enabled: model.config.enabled) }
                 .frame(maxWidth: .infinity)
+            RoutePicker()
+                .frame(width: 30, height: 30).frame(maxWidth: .infinity)
             Button { withAnimation { showHome.toggle() } } label: { Image(systemName: showHome ? "xmark.square" : "square.grid.2x2") }
                 .frame(maxWidth: .infinity)
             Menu {
@@ -268,7 +271,11 @@ struct QuickEQSheet: View {
                     fxToggle("Crossfeed", $model.config.crossfeed.on)
                     fxToggle("Comp", $model.config.comp.on)
                 }
-                Text(model.web.status.label).font(.footnote).foregroundStyle(.secondary)
+                HStack {
+                    Text(model.web.status.label).font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                    RoutePicker().frame(width: 34, height: 34)
+                }
                 Spacer(minLength: 0)
             }
             .padding()
@@ -288,4 +295,16 @@ struct QuickEQSheet: View {
                 .foregroundStyle(b.wrappedValue ? Theme.accent : Color.primary)
         }
     }
+}
+
+/// System AirPlay / Bluetooth output picker. Everything Timbre plays, EQ included, follows the route.
+struct RoutePicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let v = AVRoutePickerView()
+        v.tintColor = .white
+        v.activeTintColor = UIColor(Theme.accent)
+        v.prioritizesVideoDevices = false
+        return v
+    }
+    func updateUIView(_ v: AVRoutePickerView, context: Context) {}
 }

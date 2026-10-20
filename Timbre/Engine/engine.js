@@ -578,6 +578,96 @@
     }, 66);
   }
 
+  // ---------- now playing + remote control (runs even when Timbre is off for the site) ----------
+  var actionHandlers = {};
+  try {
+    var ms = navigator.mediaSession;
+    if (ms && ms.setActionHandler) {
+      var origSAH = ms.setActionHandler.bind(ms);
+      ms.setActionHandler = function (action, handler) {
+        actionHandlers[action] = handler;
+        return origSAH(action, handler);
+      };
+    }
+  } catch (e) {}
+
+  function mediaEls() {
+    var list = [];
+    seen.forEach(function (el) { list.push(el); });
+    try { document.querySelectorAll('audio,video').forEach(function (el) { if (list.indexOf(el) < 0) list.push(el); }); } catch (e) {}
+    return list;
+  }
+  function activeEl() {
+    var els = mediaEls(), best = null;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.paused && !el.ended) return el;
+      if (!best && el.currentSrc && el.readyState > 0) best = el;
+    }
+    return best;
+  }
+  function absURL(u) { try { return new URL(u, location.href).href; } catch (e) { return ''; } }
+
+  var lastNP = '';
+  function pollNowPlaying() {
+    var el = activeEl();
+    var md = null;
+    try { md = navigator.mediaSession && navigator.mediaSession.metadata; } catch (e) {}
+    if (!el && !md) return;
+    var art = '';
+    if (md && md.artwork && md.artwork.length) {
+      var pick = md.artwork[0];
+      md.artwork.forEach(function (a) {
+        var w = parseInt(String(a.sizes || '').split('x')[0], 10) || 0;
+        var pw = parseInt(String(pick.sizes || '').split('x')[0], 10) || 0;
+        if (w >= 128 && (pw < 128 || w < pw)) pick = a; // smallest >= 128px
+      });
+      art = absURL(pick.src);
+    }
+    var playing = el ? (!el.paused && !el.ended) : (navigator.mediaSession && navigator.mediaSession.playbackState === 'playing');
+    var np = {
+      type: 'nowplaying',
+      title: (md && md.title) || document.title || '',
+      artist: (md && md.artist) || '',
+      album: (md && md.album) || '',
+      artwork: art,
+      playing: !!playing,
+      duration: el && isFinite(el.duration) ? Math.round(el.duration) : 0,
+      position: el ? Math.round(el.currentTime) : 0,
+      canNext: !!actionHandlers.nexttrack,
+      canPrev: !!actionHandlers.previoustrack
+    };
+    var key = [np.title, np.artist, np.album, np.artwork, np.playing, np.canNext, np.canPrev].join('|');
+    if (key === lastNP) return;
+    lastNP = key;
+    post(np);
+  }
+  setInterval(pollNowPlaying, 1000);
+  document.addEventListener('play', function () { setTimeout(pollNowPlaying, 50); }, true);
+  document.addEventListener('pause', function () { setTimeout(pollNowPlaying, 50); }, true);
+
+  function runAction(name, fallback) {
+    var h = actionHandlers[name];
+    if (h) { try { h({ action: name }); return true; } catch (e) {} }
+    return fallback ? fallback() : false;
+  }
+  function act(cmd) {
+    var el = activeEl();
+    if (cmd === 'toggle') cmd = (el && !el.paused) ? 'pause' : 'play';
+    switch (cmd) {
+      case 'play': runAction('play', function () { if (el) { var p = el.play(); if (p && p.catch) p.catch(function () {}); } }); break;
+      case 'pause': runAction('pause', function () { if (el) el.pause(); }); break;
+      case 'next': runAction('nexttrack', function () { if (el && isFinite(el.duration)) el.currentTime = Math.min(el.duration, el.currentTime + 15); }); break;
+      case 'prev': runAction('previoustrack', function () { if (el) el.currentTime = Math.max(0, el.currentTime - 15); }); break;
+    }
+    setTimeout(pollNowPlaying, 300);
+  }
+  // Only frames that actually have media act; toggle is resolved per frame.
+  function command(cmd) {
+    if (activeEl() || Object.keys(actionHandlers).length) act(cmd);
+    relay({ __timbreCmd: cmd });
+  }
+
   // ---------- public API ----------
   function relay(msg) {
     try { for (var i = 0; i < window.frames.length; i++) window.frames[i].postMessage(msg, '*'); } catch (e) {}
@@ -598,7 +688,8 @@
       loadIR(id, b64);
     },
     report: function () { lastStatus = ''; status(state); relay({ __timbreReport: 1 }); },
-    sampleRate: function () { return ctx ? ctx.sampleRate : 0; }
+    sampleRate: function () { return ctx ? ctx.sampleRate : 0; },
+    command: command
   };
   var pendingIR = {};
   function loadIR(id, b64) {
@@ -627,6 +718,7 @@
     if (d.__timbreCfg) api.apply(d.__timbreCfg);
     else if (d.__timbreIR) api.setIR(d.__timbreIR.id, d.__timbreIR.b64);
     else if (d.__timbreReport) api.report();
+    else if (d.__timbreCmd && window !== window.top) command(d.__timbreCmd);
   });
 
   var origEnsure = ensureCtx;

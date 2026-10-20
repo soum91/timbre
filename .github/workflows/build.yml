@@ -46,6 +46,14 @@ jobs:
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Payload/Timbre.app/Info.plist)
           # Sideloaders (FlareStore etc.) only compare the version string, so make it <version>.<build>.
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION.$BUILD" Payload/Timbre.app/Info.plist
+          WX=Payload/Timbre.app/PlugIns/TimbreWidget.appex
+          test -x "$WX/TimbreWidget"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$WX/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION.$BUILD" "$WX/Info.plist"
+          # Ad-hoc sign with the App Group entitlement so sideloaders keep it for the widget / Live Activity.
+          codesign --force --sign - --timestamp=none --entitlements TimbreWidget/TimbreWidget.entitlements "$WX"
+          codesign --force --sign - --timestamp=none --entitlements Timbre/Timbre.entitlements Payload/Timbre.app
+          codesign -d --entitlements - "$WX" || true
           IPA="$APP-$VERSION-build-$BUILD.ipa"
           zip -qr "$IPA" Payload
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"

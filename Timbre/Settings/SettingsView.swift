@@ -11,6 +11,7 @@ struct SettingsView: View {
                     Toggle("Keep playing in background", isOn: $model.backgroundPlay)
                     Toggle("Desktop sites by default", isOn: $model.desktopMode)
                     Toggle("Live spectrum on EQ graph", isOn: $model.config.spectrum)
+                    LiveActivityToggle(center: model.nowPlaying)
                 } footer: {
                     Text("Background mode tells pages they're always visible, so players like YouTube Music don't pause when you lock the phone. Takes effect on reload.")
                 }
@@ -54,5 +55,12 @@ struct SettingsView: View {
                 Button("Clear everything", role: .destructive) { Task { await model.web.clearWebsiteData() } }
             }
         }
+    }
+}
+
+private struct LiveActivityToggle: View {
+    @ObservedObject var center: NowPlayingCenter
+    var body: some View {
+        Toggle("Live Activity while playing", isOn: $center.liveActivityEnabled)
     }
 }
