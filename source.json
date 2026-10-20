@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.13",
+          "buildVersion": "13",
+          "date": "2026-10-20T21:37:38Z",
+          "localizedDescription": "- Engine: accept bridge commands in the top frame (add-on / Gecko builds) (823931c)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-13/Timbre-1.0-build-13.ipa",
+          "size": 867015,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.12",
           "buildVersion": "12",
           "date": "2026-10-20T21:14:55Z",
@@ -83,11 +92,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.12",
-      "versionDate": "2026-10-20T21:14:55Z",
-      "versionDescription": "- Timbre EQ as a Firefox add-on (Reynard, Firefox, Firefox Android) (badafea)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-12/Timbre-1.0-build-12.ipa",
-      "size": 867012,
+      "version": "1.0.13",
+      "versionDate": "2026-10-20T21:37:38Z",
+      "versionDescription": "- Engine: accept bridge commands in the top frame (add-on / Gecko builds) (823931c)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-13/Timbre-1.0-build-13.ipa",
+      "size": 867015,
       "appPermissions": {}
     }
   ],
