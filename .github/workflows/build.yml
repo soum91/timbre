@@ -35,12 +35,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION=$BUILD \
             build | tee build.log | grep -E "error:|warning: .*(deprecated)?|BUILD" || true
-          test -d build/Build/Products/Release-iphoneos/Timbre.app
+          grep -E "error:" build.log | sort -u | head -30 | sed 's/^/::error title=compile::/' || true
+          test -x build/Build/Products/Release-iphoneos/Timbre.app/Timbre
 
       - name: Package unsigned IPA
         run: |
-          trap 'echo "::error title=package::line $LINENO: $BASH_COMMAND (exit $?)"' ERR
-          ls build/Build/Products/Release-iphoneos/Timbre.app | head -50 | tr '\n' ' ' | sed 's/^/::notice title=appdir::/'; echo
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/Timbre.app Payload/
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" Payload/Timbre.app/Info.plist
