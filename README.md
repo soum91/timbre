@@ -33,3 +33,11 @@ Shelves use `IIRFilterNode` with exact RBJ coefficients (WebKit's biquad shelves
 GitHub Actions builds an unsigned IPA on every push to `main` and attaches it to the `latest` release. Sideload it with TrollStore, AltStore, SideStore or Sideloadly.
 
 Local: `brew install xcodegen && xcodegen generate && open Timbre.xcodeproj`
+
+## Firefox add-on (Reynard, Firefox, Firefox Android)
+
+`addon/` is the same engine packaged as a WebExtension. The engine runs in the page, a content-script bridge feeds it settings from extension storage, and the popup has the EQ graph, bands, effects, presets, AutoEq search and APO/Winamp import.
+
+CI builds `Timbre-EQ-<version>.xpi` on every add-on change (`addon-<build>` releases). Release Firefox only installs signed add-ons: add `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` (from addons.mozilla.org → Developer Hub → API keys) as repo secrets and CI also produces a `-signed.xpi` through AMO's unlisted channel, which never appears on the public store.
+
+Local build: `addon/build.sh` → `dist/Timbre-EQ-<version>.xpi`.

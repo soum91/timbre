@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Timbre EQ</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <label class="power" title="Timbre on/off">
+      <input type="checkbox" id="enabled"><span></span>
+    </label>
+    <div class="titles">
+      <div id="presetName">Equalizer</div>
+      <div id="status" class="status">Waiting for audio</div>
+    </div>
+    <button id="siteToggle" class="ghost small" title="Turn Timbre off for this site">Site</button>
+  </header>
+
+  <div class="graphWrap">
+    <canvas id="graph"></canvas>
+    <div class="hint">Double-click to add a band · drag nodes · scroll or pinch for Q</div>
+  </div>
+
+  <section id="editor" class="card hidden"></section>
+
+  <section class="card" id="preampCard"></section>
+
+  <section class="card">
+    <div class="row head">
+      <h3 id="bandCount">Bands</h3>
+      <div class="btns">
+        <button data-add="peaking">+ Peak</button>
+        <button data-add="lowshelf">+ Low shelf</button>
+        <button data-add="highshelf">+ High shelf</button>
+        <button data-add="highpass">+ HP</button>
+      </div>
+    </div>
+    <div id="bands"></div>
+  </section>
+
+  <details class="card" id="fx" open>
+    <summary>Effects</summary>
+    <div id="effects"></div>
+  </details>
+
+  <details class="card" id="presetsCard">
+    <summary>Presets &amp; AutoEq</summary>
+    <div class="row">
+      <input id="saveName" placeholder="Preset name">
+      <label class="chk"><input type="checkbox" id="saveFx"> effects</label>
+      <button id="save">Save</button>
+    </div>
+    <div id="presets"></div>
+    <h4>AutoEq headphone search</h4>
+    <input id="aeq" placeholder="Sennheiser HD 650, AirPods Pro…" autocomplete="off">
+    <div id="aeqResults" class="results"></div>
+    <h4>Import / export</h4>
+    <div class="row">
+      <label class="filebtn">Import file<input type="file" id="importFile" accept=".txt,.eqf,text/plain"></label>
+      <button id="pasteBtn">Paste APO text</button>
+      <button id="exportBtn">Export APO</button>
+      <button id="flatBtn" class="danger">Reset flat</button>
+    </div>
+    <textarea id="pasteArea" class="hidden" rows="6" placeholder="Preamp: -6 dB&#10;Filter 1: ON PK Fc 1000 Hz Gain -3 dB Q 1.41"></textarea>
+  </details>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="dsp.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

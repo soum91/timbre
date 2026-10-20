@@ -1,0 +1,81 @@
+name: Build Firefox add-on
+
+on:
+  push:
+    branches: [main]
+    paths: ["addon/**", "Timbre/Engine/engine.js", ".github/workflows/addon.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BUILD: ${{ github.run_number }}
+  TAG: addon-${{ github.run_number }}
+
+jobs:
+  addon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build XPI
+        run: |
+          BASE=$(python3 -c "import json;print(json.load(open('addon/manifest.json'))['version'])")
+          VERSION="${BASE%.*}.$BUILD"
+          XPI=$(addon/build.sh "$VERSION")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "XPI=$XPI" >> "$GITHUB_ENV"
+
+      - name: Lint
+        run: npx --yes web-ext@8 lint --source-dir dist/addon --warnings-as-errors=false
+
+      - name: Sign with AMO (unlisted) if keys are set
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$AMO_JWT_ISSUER" ]; then echo "No AMO keys, shipping unsigned XPI"; exit 0; fi
+          npx --yes web-ext@8 sign --source-dir dist/addon --channel unlisted \
+            --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET" --artifacts-dir dist/signed
+          SIGNED=$(ls dist/signed/*.xpi | head -1)
+          cp "$SIGNED" "dist/Timbre-EQ-$VERSION-signed.xpi"
+          echo "SIGNED=dist/Timbre-EQ-$VERSION-signed.xpi" >> "$GITHUB_ENV"
+
+      - name: Changelog
+        run: |
+          PREV=$(git describe --tags --abbrev=0 --match 'addon-*' --exclude "$TAG" HEAD 2>/dev/null || true)
+          {
+            echo "## Timbre EQ add-on $VERSION (build $BUILD)"
+            echo
+            if [ -n "$PREV" ]; then echo "### Changes since $PREV"; R="$PREV..HEAD"; else echo "### Changes"; R=HEAD; fi
+            echo
+            LOG=$(git log $R --no-merges --pretty='- %s (%h)' -- addon Timbre/Engine/engine.js | head -n 60)
+            echo "${LOG:-- Rebuild, no add-on changes}"
+            echo
+            echo "---"
+            if [ -n "${SIGNED:-}" ]; then
+              echo "Install the **-signed.xpi** in Firefox, Firefox Android or Reynard."
+            else
+              echo "Unsigned build. Release Firefox only installs signed add-ons; use Firefox Nightly/Developer Edition or Reynard (if it allows unsigned), or set AMO_JWT_ISSUER/AMO_JWT_SECRET repo secrets to get a signed XPI."
+            fi
+          } > notes.md
+          cat notes.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Timbre EQ add-on ${{ env.VERSION }} (build ${{ env.BUILD }})
+          body_path: notes.md
+          make_latest: false
+          files: |
+            ${{ env.XPI }}
+            ${{ env.SIGNED }}

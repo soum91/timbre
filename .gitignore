@@ -4,3 +4,4 @@ Payload/
 *.ipa
 .DS_Store
 xcuserdata/
+addon/engine.js

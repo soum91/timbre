@@ -32,6 +32,8 @@
 
   var native = null;
   try { native = window.webkit.messageHandlers.timbre; } catch (e) {}
+  // Browser add-on build: the content-script bridge listens for these on window.
+  if (!native && boot.bridge) native = { postMessage: function (m) { try { window.postMessage({ __timbreOut: m }, '*'); } catch (e) {} } };
   function post(msg) {
     if (!native) return;
     try { msg.frame = host; msg.top = (window === window.top); native.postMessage(msg); } catch (e) {}
