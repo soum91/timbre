@@ -69,6 +69,28 @@ jobs:
           files: ${{ env.IPA }}
           make_latest: true
 
+      - name: Update sideloading source (FlareStore / AltStore / SideStore)
+        run: |
+          git config user.name "ci"
+          git config user.email "ci@users.noreply.github.com"
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$IPA"
+          for attempt in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/source"
+            if git fetch -q origin source; then
+              git worktree add -q -f --detach "$RUNNER_TEMP/source" FETCH_HEAD
+            else
+              git worktree add -q -f --detach "$RUNNER_TEMP/source"
+              git -C "$RUNNER_TEMP/source" checkout -q --orphan source
+              git -C "$RUNNER_TEMP/source" rm -rqf .
+            fi
+            python3 .github/scripts/update-source.py "$RUNNER_TEMP/source/source.json" "$IPA" "$URL" "release-notes.md"
+            git -C "$RUNNER_TEMP/source" add source.json
+            git -C "$RUNNER_TEMP/source" commit -qm "Source: $APP build $BUILD"
+            git -C "$RUNNER_TEMP/source" push -q origin HEAD:refs/heads/source && break
+            git worktree remove -f "$RUNNER_TEMP/source"
+            sleep 5
+          done
+
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4

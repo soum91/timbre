@@ -1,0 +1,13 @@
+{
+  "name": "Timbre",
+  "sourceName": "Timbre by soum91",
+  "sourceIdentifier": "io.github.soum91.timbre",
+  "subtitle": "Browser with a system-style EQ",
+  "description": "Web browser with an EQE-style audio engine for streaming sites: open-ended parametric EQ, reverb, spatial sound and effects.",
+  "developerName": "soum91",
+  "iconURL": "https://raw.githubusercontent.com/soum91/timbre/main/Timbre/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+  "tintColor": "AF52DE",
+  "category": "music",
+  "website": "https://github.com/soum91/timbre",
+  "sourceURL": "https://raw.githubusercontent.com/soum91/timbre/source/source.json"
+}
