@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.5",
+          "buildVersion": "5",
+          "date": "2026-10-20T20:24:33Z",
+          "localizedDescription": "- CI: version string carries the build number (<version>.<build>) (b711260)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-5/Timbre-1.0-build-5.ipa",
+          "size": 688904,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0",
           "buildVersion": "4",
           "date": "2026-10-20T18:51:47Z",
@@ -38,10 +47,10 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0",
-      "versionDate": "2026-10-20T18:51:47Z",
-      "versionDescription": "- CI: publish an AltStore-format source for FlareStore / AltStore / SideStore (15f1d5c)\n- Backfill script: repair mis-tagged releases [skip ci] (319a656)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-4/Timbre-1.0-build-4.ipa",
+      "version": "1.0.5",
+      "versionDate": "2026-10-20T20:24:33Z",
+      "versionDescription": "- CI: version string carries the build number (<version>.<build>) (b711260)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-5/Timbre-1.0-build-5.ipa",
       "size": 688904,
       "appPermissions": {}
     }
