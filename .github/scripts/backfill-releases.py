@@ -46,6 +46,13 @@ def notes(ver, build, sha, prev_sha, prev_label):
     return "\n".join(out)
 
 
+# Optional tags that were created on the wrong commit: "tag:sha tag:sha"
+TAG_FIXES = dict(x.split(":", 1) for x in os.environ.get("TAG_FIXES", "").split())
+for t, s in TAG_FIXES.items():
+    full = sh("git", "rev-parse", f"{s}^{{commit}}")
+    api(f"repos/{REPO}/git/refs/tags/{t}", "PATCH", {"sha": full, "force": True})
+    print(f"moved tag {t} -> {full[:7]}")
+
 items = []
 for r in api(f"repos/{REPO}/releases?per_page=100"):
     ipa = [a for a in r["assets"] if a["name"].endswith(".ipa")]
@@ -58,7 +65,7 @@ for r in api(f"repos/{REPO}/releases?per_page=100"):
         build = int(ROLLING.split(":")[0])
     else:
         build = int(re.search(r"(\d+)$", tag).group(1))
-    sha = sh("git", "rev-parse", f"refs/tags/{tag}^{{commit}}")
+    sha = sh("git", "rev-parse", f"{TAG_FIXES.get(tag, f'refs/tags/{tag}')}^{{commit}}")
     items.append((build, tag, sha, r, ipa[0]))
 items.sort(key=lambda x: x[0])
 
