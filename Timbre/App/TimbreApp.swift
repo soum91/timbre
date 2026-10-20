@@ -37,6 +37,7 @@ enum Theme {
 
 struct RootView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var tab = 0
 
     var body: some View {
@@ -53,6 +54,15 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }.tag(4)
         }
         .overlay(alignment: .top) { ToastView() }
+        .onChange(of: scenePhase) { phase in
+            guard phase != .active else { return }
+            // flush sign-ins to disk before iOS can kill us
+            let bg = UIApplication.shared.beginBackgroundTask(withName: "save-cookies")
+            Task { @MainActor in
+                await model.web.saveSession()
+                UIApplication.shared.endBackgroundTask(bg)
+            }
+        }
     }
 }
 

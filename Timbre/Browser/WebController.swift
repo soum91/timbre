@@ -51,6 +51,9 @@ struct EngineStatus: Equatable {
 struct PopupItem: Identifiable {
     let id = UUID()
     let webView: WKWebView
+    private(set) var vault: CookieVault!
+    private var ready = false
+    private var pendingLoads: [URLRequest] = []
 }
 
 private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
@@ -97,6 +100,14 @@ final class WebController: NSObject, ObservableObject {
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = true
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
+        vault = CookieVault(store: cfg.websiteDataStore.httpCookieStore)
+        Task { @MainActor in
+            await self.vault.restore()
+            self.ready = true
+            let queued = self.pendingLoads
+            self.pendingLoads = []
+            queued.forEach { self.webView.load($0) }
+        }
         cfg.userContentController.add(WeakMessageHandler(self), name: "timbre")
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -180,10 +191,17 @@ final class WebController: NSObject, ObservableObject {
             c.queryItems = [URLQueryItem(name: "q", value: t)]
             target = c.url
         }
-        if let u = target { webView.load(URLRequest(url: u)) }
+        if let u = target { open(URLRequest(url: u)) }
     }
 
-    func load(url: URL) { webView.load(URLRequest(url: url)) }
+    func load(url: URL) { open(URLRequest(url: url)) }
+
+    /// Holds loads until saved sign-in cookies are back in the store.
+    private func open(_ r: URLRequest) {
+        if ready { webView.load(r) } else { pendingLoads.append(r) }
+    }
+
+    func saveSession() async { await vault.save() }
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
     func reload() { webView.reload() }
@@ -192,6 +210,7 @@ final class WebController: NSObject, ObservableObject {
     func clearWebsiteData() async {
         let store = WKWebsiteDataStore.default()
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        vault.wipe()
         await store.removeData(ofTypes: types, modifiedSince: .distantPast)
         webView.reload()
     }
