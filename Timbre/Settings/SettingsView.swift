@@ -28,6 +28,15 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    ForEach(model.compatHosts, id: \.self) { Text($0) }
+                        .onDelete { model.compatHosts.remove(atOffsets: $0) }
+                } header: {
+                    Text("Compatibility mode")
+                } footer: {
+                    Text("Hides MediaSource from these sites so they stream in a format iOS WebKit lets the EQ process.")
+                }
+
+                Section {
                     Button("Clear cookies & website data", role: .destructive) { confirmClear = true }
                 }
 

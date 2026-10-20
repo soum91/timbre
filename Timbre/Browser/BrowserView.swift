@@ -113,8 +113,16 @@ private struct BrowserContent: View {
         let host = model.currentHost
         switch web.status.state {
         case .silent:
-            return AnyView(StatusBanner(text: "Audio went silent once Timbre took over. This site's stream is DRM-protected.",
-                                        action: "Turn off for \(host ?? "this site")") { model.toggleCurrentSite() })
+            let compat = model.isCompat(host: host)
+            let why = web.status.detail.hasPrefix("mse")
+                ? "This player streams through MediaSource, which iOS WebKit won't hand to the EQ."
+                : "Audio went silent once Timbre took over (\(web.status.detail.isEmpty ? "unknown source" : web.status.detail))."
+            if !compat {
+                return AnyView(StatusBanner(text: why + " Compatibility mode makes the site use a stream WebKit can EQ.",
+                                            action: "Try compatibility mode") { model.toggleCompat() })
+            }
+            return AnyView(StatusBanner(text: why + " Compatibility mode is already on and didn't help here.",
+                                        action: "Turn Timbre off for \(host ?? "this site")") { model.toggleCurrentSite() })
         case .drm:
             return AnyView(StatusBanner(text: "This stream is DRM-protected. WebKit won't let any EQ touch it.", action: nil, perform: {}))
         default:
@@ -139,6 +147,13 @@ private struct BrowserContent: View {
                         model.isDisabled(host: model.currentHost)
                             ? Label("Turn Timbre on for this site", systemImage: "slider.vertical.3")
                             : Label("Turn Timbre off for this site", systemImage: "pause.circle")
+                    }
+                }
+                if model.currentHost != nil {
+                    Button { model.toggleCompat() } label: {
+                        model.isCompat(host: model.currentHost)
+                            ? Label("Compatibility mode: on", systemImage: "checkmark.circle")
+                            : Label("Compatibility mode: off", systemImage: "circle")
                     }
                 }
                 if let u = web.url {

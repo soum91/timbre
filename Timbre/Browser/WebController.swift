@@ -29,7 +29,7 @@ struct EngineStatus: Equatable {
         case .active: return streams > 1 ? "EQ live · \(streams) streams" : "EQ live"
         case .drm: return "DRM audio, can't EQ"
         case .cors: return "Cross-origin audio, can't EQ"
-        case .silent: return "Went silent, likely DRM"
+        case .silent: return "WebKit won't pass this stream to the EQ"
         case .error: return "Engine error"
         case .off: return "Off for this site"
         }
@@ -140,14 +140,15 @@ final class WebController: NSObject, ObservableObject {
     private struct Boot: Encodable {
         let config: DSPConfig
         let disabledHosts: [String]
+        let compatHosts: [String]
         let background: Bool
     }
 
     /// Rebuilds the document-start script so new pages and frames boot with current settings.
-    func installScripts(config: DSPConfig, disabledHosts: [String], background: Bool) {
+    func installScripts(config: DSPConfig, disabledHosts: [String], compatHosts: [String], background: Bool) {
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
-        guard let data = try? JSONEncoder().encode(Boot(config: config, disabledHosts: disabledHosts, background: background)),
+        guard let data = try? JSONEncoder().encode(Boot(config: config, disabledHosts: disabledHosts, compatHosts: compatHosts, background: background)),
               let json = String(data: data, encoding: .utf8) else { return }
         let src = "window.__TIMBRE_BOOT=\(json);\n" + Self.engineSource
         ucc.addUserScript(WKUserScript(source: src, injectionTime: .atDocumentStart, forMainFrameOnly: false))

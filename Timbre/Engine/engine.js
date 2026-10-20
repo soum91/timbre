@@ -15,6 +15,21 @@
     return h && (host === h || host.endsWith('.' + h));
   });
 
+  function hostIn(list) {
+    return (list || []).some(function (h) { return h && (host === h || host.endsWith('.' + h)); });
+  }
+
+  // Compatibility mode: iOS WebKit doesn't pass MediaSource (blob:) streams into Web Audio, so routing
+  // them gives silence. Hiding MSE before the page's scripts run makes players like YouTube fall back
+  // to HLS / progressive files, which WebKit can tap.
+  var compat = !disabledHere && hostIn(boot.compatHosts);
+  if (compat) {
+    ['MediaSource', 'ManagedMediaSource', 'WebKitMediaSource'].forEach(function (k) {
+      try { Object.defineProperty(window, k, { value: undefined, configurable: true, writable: true }); } catch (e) {}
+      try { delete window[k]; } catch (e) {}
+    });
+  }
+
   var native = null;
   try { native = window.webkit.messageHandlers.timbre; } catch (e) {}
   function post(msg) {
@@ -474,10 +489,10 @@
     if (corsTried.has(el) || !window.fetch) { status('cors', h); return; }
     corsTried.add(el);
     var ac = window.AbortController ? new AbortController() : null;
-    fetch(src, { method: 'GET', mode: 'cors', credentials: 'omit', headers: { Range: 'bytes=0-1' }, signal: ac ? ac.signal : undefined })
+    fetch(src, { method: 'GET', mode: 'cors', credentials: 'omit', signal: ac ? ac.signal : undefined })
       .then(function (r) {
         if (ac) ac.abort();
-        if (!r.ok && r.status !== 206) throw new Error('status ' + r.status);
+        if (!r.ok) throw new Error('status ' + r.status);
         if ((el.currentSrc || el.src) !== src) return; // player moved on
         var t = el.currentTime, wasPlaying = !el.paused, rate = el.playbackRate;
         el.crossOrigin = 'anonymous';
@@ -487,6 +502,13 @@
         if (wasPlaying) { var p = el.play(); if (p && p.catch) p.catch(function () {}); }
       })
       .catch(function () { status('cors', h); });
+  }
+
+  function srcKind(el) {
+    var src = el.currentSrc || el.src || '';
+    if (/^blob:/i.test(src)) return compat ? 'mse-compat-failed' : 'mse';
+    if (/\.m3u8|manifest|hls/i.test(src)) return 'hls';
+    try { return new URL(src, location.href).hostname; } catch (e) { return 'unknown'; }
   }
 
   // If audio is flowing into the element but nothing comes out of the graph, it's probably DRM or tainted.
@@ -502,7 +524,7 @@
         G.an.getFloatTimeDomainData(buf);
         var peak = 0; for (var i = 0; i < buf.length; i++) { var v = Math.abs(buf[i]); if (v > peak) peak = v; }
         if (peak < 1e-6) silent++; else silent = 0;
-        if (silent >= 6) { status('silent'); clearInterval(iv); return; }
+        if (silent >= 6) { status('silent', srcKind(el)); clearInterval(iv); return; }
       }
       if (checks > 40) clearInterval(iv);
     }, 500);
@@ -619,5 +641,5 @@
   };
 
   try { Object.defineProperty(window, '__timbre', { value: api, enumerable: false }); } catch (e) { window.__timbre = api; }
-  if (window === window.top) status(state);
+  if (window === window.top) status(state, compat ? 'compat' : '');
 })();

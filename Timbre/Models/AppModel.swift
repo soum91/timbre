@@ -32,6 +32,9 @@ final class AppModel: ObservableObject {
     @Published var disabledHosts: [String] {
         didSet { save(disabledHosts, key: Keys.disabled); reinstallScripts() }
     }
+    @Published var compatHosts: [String] {
+        didSet { save(compatHosts, key: Keys.compat); reinstallScripts() }
+    }
     @Published var selectedBandID: String?
     @Published var toast: String?
 
@@ -42,7 +45,7 @@ final class AppModel: ObservableObject {
 
     private enum Keys {
         static let config = "timbre.config", presets = "timbre.presets", activeName = "timbre.activePreset"
-        static let desktop = "timbre.desktop", background = "timbre.background", disabled = "timbre.disabledHosts"
+        static let desktop = "timbre.desktop", background = "timbre.background", disabled = "timbre.disabledHosts", compat = "timbre.compatHosts"
     }
 
     private var pushScheduled = false
@@ -57,13 +60,14 @@ final class AppModel: ObservableObject {
         desktopMode = d.bool(forKey: Keys.desktop)
         backgroundPlay = d.object(forKey: Keys.background) as? Bool ?? true
         disabledHosts = Self.load([String].self, key: Keys.disabled) ?? []
+        compatHosts = Self.load([String].self, key: Keys.compat) ?? ["youtube.com"]
 
         web.setDesktop(desktopMode, reload: false)
         web.onSpectrum = { [weak self] b in self?.spectrum.update(b) }
         web.onSampleRate = { [weak self] r in if self?.sampleRate != r { self?.sampleRate = r } }
         web.onNeedIR = { [weak self] id in self?.sendIR(id) }
         web.onIRError = { [weak self] _ in self?.toast = "Couldn't decode that impulse response." }
-        web.installScripts(config: config, disabledHosts: disabledHosts, background: backgroundPlay)
+        web.installScripts(config: config, disabledHosts: disabledHosts, compatHosts: compatHosts, background: backgroundPlay)
     }
 
     // MARK: persistence
@@ -101,7 +105,7 @@ final class AppModel: ObservableObject {
         scriptWork?.cancel()
         let w = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.web.installScripts(config: self.config, disabledHosts: self.disabledHosts, background: self.backgroundPlay)
+            self.web.installScripts(config: self.config, disabledHosts: self.disabledHosts, compatHosts: self.compatHosts, background: self.backgroundPlay)
         }
         scriptWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: w)
@@ -225,6 +229,18 @@ final class AppModel: ObservableObject {
         if isDisabled(host: h) { disabledHosts.removeAll { h == $0 || h.hasSuffix("." + $0) } }
         else { disabledHosts.append(h) }
         // scripts reinstall is debounced; reload after it lands
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.web.reload() }
+    }
+
+    func isCompat(host: String?) -> Bool {
+        guard let host else { return false }
+        return compatHosts.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
+    func toggleCompat() {
+        guard let h = currentHost else { return }
+        if isCompat(host: h) { compatHosts.removeAll { h == $0 || h.hasSuffix("." + $0) } }
+        else { compatHosts.append(h) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.web.reload() }
     }
 
