@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.12",
+          "buildVersion": "12",
+          "date": "2026-10-20T21:14:55Z",
+          "localizedDescription": "- Timbre EQ as a Firefox add-on (Reynard, Firefox, Firefox Android) (badafea)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-12/Timbre-1.0-build-12.ipa",
+          "size": 867012,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.11",
           "buildVersion": "11",
           "date": "2026-10-20T21:04:00Z",
@@ -74,11 +83,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.11",
-      "versionDate": "2026-10-20T21:04:00Z",
-      "versionDescription": "- User agent presets (Safari, Chrome, Firefox, Edge) and custom string (3889ecd)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-11/Timbre-1.0-build-11.ipa",
-      "size": 866981,
+      "version": "1.0.12",
+      "versionDate": "2026-10-20T21:14:55Z",
+      "versionDescription": "- Timbre EQ as a Firefox add-on (Reynard, Firefox, Firefox Android) (badafea)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-12/Timbre-1.0-build-12.ipa",
+      "size": 867012,
       "appPermissions": {}
     }
   ],
