@@ -21,6 +21,15 @@
       "versions": [
         {
           "version": "1.0",
+          "buildVersion": "4",
+          "date": "2026-10-20T18:51:47Z",
+          "localizedDescription": "- CI: publish an AltStore-format source for FlareStore / AltStore / SideStore (15f1d5c)\n- Backfill script: repair mis-tagged releases [skip ci] (319a656)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-4/Timbre-1.0-build-4.ipa",
+          "size": 688904,
+          "minOSVersion": "16.0"
+        },
+        {
+          "version": "1.0",
           "buildVersion": "3",
           "date": "2026-10-20T18:47:46Z",
           "localizedDescription": "- CI: build number in IPA file names and changelog in release notes (de2cef4)\n- Compatibility mode: hide MediaSource so iOS WebKit can EQ YouTube; fix silent-stream diagnosis (5c21ab2)\n- Timbre: browser with parametric EQ, spatial, reverb and effects engine (43e60cd)",
@@ -30,9 +39,9 @@
         }
       ],
       "version": "1.0",
-      "versionDate": "2026-10-20T18:47:46Z",
-      "versionDescription": "- CI: build number in IPA file names and changelog in release notes (de2cef4)\n- Compatibility mode: hide MediaSource so iOS WebKit can EQ YouTube; fix silent-stream diagnosis (5c21ab2)\n- Timbre: browser with parametric EQ, spatial, reverb and effects engine (43e60cd)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-3/Timbre-1.0-build-3.ipa",
+      "versionDate": "2026-10-20T18:51:47Z",
+      "versionDescription": "- CI: publish an AltStore-format source for FlareStore / AltStore / SideStore (15f1d5c)\n- Backfill script: repair mis-tagged releases [skip ci] (319a656)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-4/Timbre-1.0-build-4.ipa",
       "size": 688904,
       "appPermissions": {}
     }
