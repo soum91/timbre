@@ -1,0 +1,28 @@
+[0;36m==> [1;39mCleaning…[m
+[0;36m==> [1;36mNotice:[m Build may be slow as Theos isn’t using all available CPU cores on this computer. Consider upgrading GNU Make: https://theos.dev/docs/parallel-building
+[1;31m> [1;3;39mMaking all for tweak TimbreAudio…[m
+[0;32m==> [1;39mCompiling Tweak.mm (arm64)…[m
+[0;32m==> [1;39mCompiling ../NativeDSP/TimbreDSP.cpp (arm64)…[m
+[0;33m==> [1;39mLinking tweak TimbreAudio (arm64)…[m
+ld: warning: -multiply_defined is obsolete
+[0;34m==> [1;39mGenerating debug symbols for TimbreAudio…[m
+[0;34m==> [1;39mStripping TimbreAudio (arm64)…[m
+[0;34m==> [1;39mSigning TimbreAudio…[m
+[1;31m> [1;3;39mMaking all for application TimbreControl…[m
+[0;35m==> [1;39mCopying resource files into the application wrapper…[m
+[0;32m==> [1;39mCompiling TimbreControl/main.m (arm64)…[m
+[0;33m==> [1;39mLinking application TimbreControl (arm64)…[m
+ld: warning: -multiply_defined is obsolete
+[0;34m==> [1;39mGenerating debug symbols for TimbreControl…[m
+[0;34m==> [1;39mStripping TimbreControl (arm64)…[m
+[0;34m==> [1;39mSigning TimbreControl…[m
+[1;31m> [1;3;39mMaking all for tool timbrectl…[m
+[0;32m==> [1;39mCompiling timbrectl/main.c (arm64)…[m
+[0;33m==> [1;39mLinking tool timbrectl (arm64)…[m
+ld: warning: -multiply_defined is obsolete
+ld: open() failed, errno=21 for '/Users/runner/work/timbre/timbre/Tweak/.theos/obj/arm64/timbrectl'
+clang: [0;1;31merror: [0m[1mlinker command failed with exit code 1 (use -v to see invocation)[0m
+make[3]: *** [/Users/runner/work/timbre/timbre/Tweak/.theos/obj/arm64/timbrectl] Error 1
+make[2]: *** [/Users/runner/work/timbre/timbre/Tweak/.theos/obj/arm64/timbrectl] Error 2
+make[1]: *** [internal-tool-all_] Error 2
+make: *** [timbrectl.all.tool.variables] Error 2
