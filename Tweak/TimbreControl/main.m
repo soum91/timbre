@@ -144,6 +144,7 @@ static int runHelper(NSString *command, NSString **output);
         @"width": @{@"on": @NO, @"width": @1.0, @"balance": @0.0, @"mono": @NO, @"swap": @NO},
         @"spatial": @{@"on": @NO, @"angle": @30.0, @"amount": @0.8, @"distance": @1.0, @"mode": @1, @"surround": @0.5, @"height": @0.3},
         @"routing": @{@"enabled": @NO, @"devices": @{}, @"types": @{}},
+        @"cast": @{@"enabled": @NO, @"device": @"", @"muteLocal": @YES},
         @"reverb": @{@"on": @NO, @"decay": @1.8, @"predelay": @20.0, @"damping": @6000.0, @"width": @1.0, @"mix": @0.25},
         @"limiter": @{@"on": @YES, @"ceiling": @(-1.0)},
         @"presets": @[],
@@ -347,6 +348,8 @@ static NSString *formatText(uint64_t f, uint64_t rate) {
     NSString *layout = (flags & kAudioFormatFlagIsNonInterleaved) ? @"planar" : @"interleaved";
     return [NSString stringWithFormat:@"%u-bit %@ %@, %u ch, %u buffer%@, %.0f Hz", bits, type, layout, ch, bufs, bufs == 1 ? @"" : @"s", (double)(uint32_t)rate];
 }
+
+static NSDictionary *castStatus(void);
 
 #pragma mark - Vertical fader
 
@@ -899,6 +902,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     UIButton *_preampValue;
     UISlider *_preamp;
     UIButton *_statusPill;
+    UIButton *_castButton;
     NSTimer *_statusTimer;
     uint64_t _lastFrames;
     NSInteger _selected;
@@ -936,7 +940,11 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     airplay.prioritizesVideoDevices = NO;
     [airplay.widthAnchor constraintEqualToConstant:30].active = YES;
     [airplay.heightAnchor constraintEqualToConstant:30].active = YES;
-    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[title, [UIView new], airplay, gear, more, _power]];
+    _castButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_castButton setImage:[UIImage systemImageNamed:@"tv.and.hifispeaker.fill"] forState:UIControlStateNormal];
+    _castButton.tintColor = UIColor.whiteColor;
+    [_castButton addTarget:self action:@selector(showCast) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[title, [UIView new], airplay, _castButton, gear, more, _power]];
     head.spacing = 14; head.alignment = UIStackViewAlignmentCenter;
 
     UILabel *pre = [UILabel new];
@@ -1016,6 +1024,10 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(updateStatus) userInfo:nil repeats:YES];
 }
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [_statusTimer invalidate]; _statusTimer = nil; }
+- (void)showCast {
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[NSClassFromString(@"TBCastController") new]];
+    [self presentViewController:nav animated:YES completion:nil];
+}
 - (void)showOutputs {
     Class c = NSClassFromString(@"TBRoutesController");
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[c new]];
@@ -1051,6 +1063,10 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         }
     }
     if ([TBStore shared].lastError) { text = [TBStore shared].lastError; color = UIColor.systemRedColor; }
+    NSDictionary *cast = castStatus();
+    const BOOL casting = [cast[@"state"] isEqualToString:@"playing"];
+    _castButton.tintColor = casting ? accentColor() : [cast[@"enabled"] boolValue] ? UIColor.systemYellowColor : UIColor.whiteColor;
+    if (casting) text = [text stringByAppendingFormat:@"\nCasting to %@", cast[@"device"]];
     [UIView performWithoutAnimation:^{
         [self->_statusPill setTitle:text forState:UIControlStateNormal];
         self->_statusPill.tintColor = color;
@@ -1868,6 +1884,128 @@ static void recordCurrentRoute(void) {
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     sheet.popoverPresentationController.sourceView = source;
     [self presentViewController:sheet animated:YES completion:nil];
+}
+@end
+
+#pragma mark - Chromecast
+
+static NSString *const kCastDevicesPath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.cast-devices.plist";
+static NSString *const kCastStatusPath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.cast-status.plist";
+
+static NSDictionary *castStatus(void) {
+    NSDictionary *st = [NSDictionary dictionaryWithContentsOfFile:kCastStatusPath];
+    if (![st isKindOfClass:NSDictionary.class] || labs((long)time(NULL) - [st[@"time"] longValue]) > 5) return nil;  // daemon not running
+    return st;
+}
+
+@interface TBCastController : UITableViewController
+@end
+@implementation TBCastController {
+    NSTimer *_timer;
+    NSArray<NSDictionary *> *_devices;
+    NSDictionary *_status;
+}
+- (instancetype)init {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) self.title = @"Chromecast";
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.tableView.backgroundColor = UIColor.blackColor;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
+}
+- (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self refresh];
+    _timer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
+}
+- (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [_timer invalidate]; _timer = nil; }
+- (NSMutableDictionary *)cast {
+    NSMutableDictionary *c = [[TBStore shared] valueAt:@"cast"];
+    if (![c isKindOfClass:NSMutableDictionary.class]) { c = [@{@"enabled": @NO, @"device": @"", @"muteLocal": @YES} mutableCopy]; [TBStore shared].config[@"cast"] = c; }
+    return c;
+}
+- (void)refresh {
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kCastDevicesPath];
+    NSMutableArray *list = [NSMutableArray new];
+    for (NSString *k in d) if ([d[k] isKindOfClass:NSDictionary.class]) [list addObject:d[k]];
+    [list sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]]; }];
+    _devices = list;
+    _status = castStatus();
+    if (!self.tableView.isTracking) [self.tableView reloadData];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return 3; }
+- (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s { return @[@"", @"Devices", @"Playback"][(NSUInteger)s]; }
+- (NSString *)tableView:(UITableView *)t titleForFooterInSection:(NSInteger)s {
+    if (s == 0) return @"Casts everything the iPhone plays, after Timbre's EQ and effects, as lossless 48 kHz audio. Chromecast buffers, so expect about 2 to 4 seconds of delay: great for music, not for video.";
+    if (s == 1) return _devices.count ? nil : (_status ? @"Searching your Wi-Fi for Chromecasts, Google/Nest speakers and Cast-enabled TVs…" : @"The cast service is not running. Reinstall the package or respring.");
+    return @"Mute iPhone only applies while a Chromecast is actually receiving the stream.";
+}
+- (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s { return s == 0 ? 2 : s == 1 ? (NSInteger)_devices.count : 2; }
+- (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"c"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"c"];
+    c.accessoryView = nil; c.accessoryType = UITableViewCellAccessoryNone; c.selectionStyle = UITableViewCellSelectionStyleNone;
+    UIListContentConfiguration *cfg = [UIListContentConfiguration valueCellConfiguration];
+    NSMutableDictionary *cast = self.cast;
+    if (ip.section == 0 && ip.row == 0) {
+        cfg.text = @"Cast system audio";
+        UISwitch *sw = [UISwitch new];
+        sw.onTintColor = accentColor();
+        sw.on = [cast[@"enabled"] boolValue];
+        sw.tag = 1;
+        [sw addTarget:self action:@selector(switched:) forControlEvents:UIControlEventValueChanged];
+        c.accessoryView = sw;
+    } else if (ip.section == 0) {
+        cfg.text = @"Status";
+        NSString *msg = _status ? _status[@"message"] : @"Cast service not running";
+        if ([_status[@"streaming"] boolValue] && ![msg isEqualToString:@"Casting"]) msg = [msg stringByAppendingString:@" · streaming"];
+        cfg.secondaryText = msg;
+        NSString *state = _status[@"state"];
+        cfg.secondaryTextProperties.color = [state isEqualToString:@"playing"] ? UIColor.systemGreenColor : [state isEqualToString:@"error"] ? UIColor.systemRedColor : dimColor();
+    } else if (ip.section == 1) {
+        NSDictionary *d = _devices[(NSUInteger)ip.row];
+        cfg.text = d[@"name"];
+        cfg.secondaryText = d[@"model"];
+        cfg.image = [UIImage systemImageNamed:[d[@"model"] rangeOfString:@"Chromecast" options:NSCaseInsensitiveSearch].location != NSNotFound ? @"tv" : @"hifispeaker"];
+        cfg.imageProperties.tintColor = accentColor();
+        c.accessoryType = [cast[@"device"] isEqualToString:d[@"id"]] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        c.selectionStyle = UITableViewCellSelectionStyleDefault;
+    } else if (ip.row == 0) {
+        cfg.text = @"Cast volume";
+        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 170, 30)];
+        slider.minimumTrackTintColor = accentColor();
+        slider.value = [cast[@"volume"] respondsToSelector:@selector(floatValue)] ? [cast[@"volume"] floatValue] : .5f;
+        [slider addTarget:self action:@selector(volumeChanged:) forControlEvents:UIControlEventValueChanged];
+        c.accessoryView = slider;
+    } else {
+        cfg.text = @"Mute iPhone while casting";
+        UISwitch *sw = [UISwitch new];
+        sw.onTintColor = accentColor();
+        sw.on = [cast[@"muteLocal"] boolValue];
+        sw.tag = 2;
+        [sw addTarget:self action:@selector(switched:) forControlEvents:UIControlEventValueChanged];
+        c.accessoryView = sw;
+    }
+    c.contentConfiguration = cfg;
+    return c;
+}
+- (void)switched:(UISwitch *)sw {
+    self.cast[sw.tag == 1 ? @"enabled" : @"muteLocal"] = @(sw.on);
+    [[TBStore shared] changed];
+}
+- (void)volumeChanged:(UISlider *)s {
+    self.cast[@"volume"] = @(round(s.value * 100) / 100);
+    [[TBStore shared] changed];
+}
+- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [t deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section != 1) return;
+    NSMutableDictionary *cast = self.cast;
+    cast[@"device"] = _devices[(NSUInteger)ip.row][@"id"];
+    cast[@"enabled"] = @YES;  // picking a device means "cast to it"
+    [[TBStore shared] changed];
+    [t reloadData];
 }
 @end
 

@@ -1,4 +1,4 @@
-# Timbre Audio 0.7.0 (experimental)
+# Timbre Audio 0.8.0 (experimental)
 
 Target: Dopamine rootless, iOS 16.x. CI builds the DEB on every push to `timbre-rootless`.
 Local build on a configured Theos installation:
@@ -23,6 +23,15 @@ Darwin notification, with a once-per-second plist poll as fallback.
 - Spatial, Reverb and Dynamics tabs with presets, mirroring the main Timbre app.
 - Presets: built-ins, saved presets (EQ + effects), Equalizer APO / AutoEq import from the
   clipboard and export to the clipboard.
+
+## Chromecast (0.8.0)
+
+The tweak copies the final processed mix into a shared ring
+(`com.soum91.timbreaudio.cast.ring`, 4 s of 16-bit stereo). `timbrecastd`, a launchd daemon running
+as mobile, discovers Cast devices over mDNS, serves the ring as a live 48 kHz WAV stream on port 8099
+(paced to real time with a 120 ms cushion and resampling), and drives the Default Media Receiver over
+the Cast v2 protocol (TLS + protobuf, no Google SDK). Optional local mute only while a device is
+actually pulling the stream. Expect 2 to 4 s of receiver-side latency.
 
 ## 0.7.0 additions
 

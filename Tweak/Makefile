@@ -18,8 +18,14 @@ TimbreControl_FRAMEWORKS = UIKit Foundation AVFoundation AVKit
 TimbreControl_CFLAGS = -fobjc-arc
 include $(THEOS_MAKE_PATH)/application.mk
 
-TOOL_NAME = timbrectl
+TOOL_NAME = timbrectl timbrecastd
 timbrectl_FILES = Helper/main.c
 timbrectl_INSTALL_PATH = /usr/libexec
 timbrectl_CODESIGN_FLAGS = -SHelper/entitlements.plist
+
+timbrecastd_FILES = CastDaemon/main.m
+timbrecastd_CFLAGS = -fobjc-arc
+timbrecastd_FRAMEWORKS = Foundation Network Security CFNetwork
+timbrecastd_INSTALL_PATH = /usr/libexec
+timbrecastd_CODESIGN_FLAGS = -SCastDaemon/entitlements.plist
 include $(THEOS_MAKE_PATH)/tool.mk

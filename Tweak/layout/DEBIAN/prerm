@@ -1,5 +1,9 @@
 #!/bin/sh
 # Deregister only when removing, not while upgrading the installed app.
+# Stop the cast daemon before files are replaced or removed; postinst reloads it on upgrade.
+LAUNCHCTL=/var/jb/usr/bin/launchctl
+[ -x "$LAUNCHCTL" ] || LAUNCHCTL=launchctl
+"$LAUNCHCTL" unload /var/jb/Library/LaunchDaemons/com.soum91.timbrecastd.plist >/dev/null 2>&1 || true
 if [ "${1:-}" = remove ]; then
     UICACHE=/var/jb/usr/bin/uicache
     [ -x "$UICACHE" ] || UICACHE=/usr/bin/uicache

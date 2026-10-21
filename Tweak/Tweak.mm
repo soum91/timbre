@@ -14,6 +14,10 @@
 #include <cmath>
 #include <cstdint>
 #include "../NativeDSP/TimbreDSP.hpp"
+#include "CastShared.h"
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 namespace {
 constexpr size_t kMaxBands = 16;
@@ -38,6 +42,7 @@ struct Config {
     timbre::Band bands[kMaxBands]{};
     timbre::EffectsParams fx{};
     bool fxActive = false;
+    bool castEnabled = false;
 };
 // Replaced snapshots are freed after a grace period; a render callback only holds one for its own duration.
 std::atomic<const Config *> active{nullptr};
@@ -218,6 +223,7 @@ static void startRouteMonitor() {
     (void)retained;
 }
 
+static void updateCastState();
 static void reloadSettings() {
     @autoreleasepool {
         NSDictionary *d = nil;
@@ -256,10 +262,12 @@ static void reloadSettings() {
             if (valid(f, 20, 20000) && valid(g, -24, 24) && valid(q, 0.2, 10))
                 next->bands[next->count++] = timbre::Band{true, timbre::FilterType::Peaking, f, g, q};
         }
+        next->castEnabled = flag(section(d, @"cast"), @"enabled", false);
         next->fx = parseEffects(d);
         next->fxActive = timbre::effectsActive(next->fx);
         if (next->enabled && next->fxActive) ensureEffectSlots();
         const Config *old = active.exchange(next, std::memory_order_acq_rel);
+        updateCastState();
         if (old) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), reloadQueue, ^{ delete old; });
         os_log(OS_LOG_DEFAULT, "Timbre: configuration source=%{public}u enabled=%{public}d bands=%{public}lu effects=%{public}d",
                source, (int)next->enabled, (unsigned long)next->count, (int)next->fxActive);
@@ -327,9 +335,66 @@ static void applyEffects(AudioUnit unit, double rate, float *samples, UInt32 fra
     }
     fx->process(samples, frames);
 }
+// ---------------------------------------------------------------------------
+// Cast tap: copies the final mix into a shared ring that timbrecastd streams to a Chromecast.
+// The file is mapped on the reload queue; the render thread only checks an atomic flag.
+// ---------------------------------------------------------------------------
+std::atomic<TBCastHeader *> castRing{nullptr};
+std::atomic<bool> castActive{false}, castMute{false};
+std::atomic<uint64_t> castFrames{0};
+
+static void updateCastState() {
+    const Config *c = active.load(std::memory_order_acquire);
+    TBCastHeader *ring = castRing.load(std::memory_order_acquire);
+    if (c && c->castEnabled && !ring) {
+        const int fd = open(TB_CAST_RING_PATH, O_RDWR);
+        if (fd >= 0) {
+            struct stat st{};
+            if (fstat(fd, &st) == 0 && (uint64_t)st.st_size >= TB_CAST_FILE_SIZE) {
+                void *m = mmap(nullptr, TB_CAST_FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                if (m != MAP_FAILED) {
+                    TBCastHeader *h = (TBCastHeader *)m;
+                    if (h->magic == TB_CAST_MAGIC && h->version == TB_CAST_VERSION && h->capacity == TB_CAST_CAPACITY) {
+                        // Touch every page now so the audio thread never takes a first-use fault.
+                        volatile int16_t *samples = tbCastSamples(h);
+                        for (uint64_t i = 0; i < (uint64_t)TB_CAST_CAPACITY * 2; i += 2048) (void)samples[i];
+                        castRing.store(h, std::memory_order_release);
+                        ring = h;
+                    } else munmap(m, TB_CAST_FILE_SIZE);
+                }
+            }
+            close(fd);
+        }
+    }
+    const uint64_t beat = ring ? __atomic_load_n(&ring->readerHeartbeat, __ATOMIC_ACQUIRE) : 0;
+    const bool on = c && c->castEnabled && ring && (uint64_t)time(nullptr) - beat <= 4;
+    castActive.store(on, std::memory_order_release);
+    castMute.store(on && ring->muteLocal, std::memory_order_release);
+}
+static void castWrite(const float *interleaved, UInt32 frames, double rate) noexcept {
+    TBCastHeader *h = castRing.load(std::memory_order_acquire);
+    if (!h) return;
+    const uint32_t r = (uint32_t)rate;
+    if (h->rate != r) h->rate = r;
+    uint64_t w = __atomic_load_n(&h->writeFrames, __ATOMIC_RELAXED);
+    int16_t *out = tbCastSamples(h);
+    for (UInt32 i = 0; i < frames; i++, w++) {
+        const uint64_t at = (w % TB_CAST_CAPACITY) * 2;
+        out[at] = (int16_t)std::lrintf(std::clamp(interleaved[2 * i], -1.f, 32767.f / 32768.f) * 32768.f);
+        out[at + 1] = (int16_t)std::lrintf(std::clamp(interleaved[2 * i + 1], -1.f, 32767.f / 32768.f) * 32768.f);
+    }
+    __atomic_store_n(&h->writeFrames, w, __ATOMIC_RELEASE);
+    castFrames.fetch_add(frames, std::memory_order_relaxed);
+}
 static void runChain(AudioUnit unit, double rate, float *interleaved, UInt32 frames, const Config *config) noexcept {
-    process(interleaved, frames, config);
-    if (config->fxActive) applyEffects(unit, rate, interleaved, frames, config);
+    if (config->enabled) {
+        process(interleaved, frames, config);
+        if (config->fxActive) applyEffects(unit, rate, interleaved, frames, config);
+    }
+    if (castActive.load(std::memory_order_acquire)) {
+        castWrite(interleaved, frames, rate);
+        if (castMute.load(std::memory_order_relaxed)) std::memset(interleaved, 0, sizeof(float) * 2 * frames);
+    }
 }
 static uint64_t packFormat(const AudioStreamBasicDescription &f, const AudioBufferList *b, Reject r) {
     return (uint64_t)f.mFormatFlags | ((uint64_t)(f.mChannelsPerFrame & 0xff) << 32) | ((uint64_t)(f.mBitsPerChannel & 0xff) << 40) |
@@ -355,7 +420,7 @@ static Reject render(AudioUnit unit, UInt32 bus, UInt32 frames, AudioBufferList 
     else if (!isFloat && !isInt16) r = kSampleType;
     else if (!interleaved && !planar) r = kLayout;
     else if (!valid(fmt.mSampleRate, 8000, 192000)) r = kRate;
-    else if (!config || !config->enabled) r = kDisabled;
+    else if (!config || (!config->enabled && !castActive.load(std::memory_order_acquire))) r = kDisabled;
     statFormat.store(packFormat(fmt, buffers, r), std::memory_order_relaxed);
     if (r != kOK) return r;
     for (UInt32 i = 0; i < buffers->mNumberBuffers; i++) {
@@ -363,7 +428,7 @@ static Reject render(AudioUnit unit, UInt32 bus, UInt32 frames, AudioBufferList 
         if (!b.mData || b.mDataByteSize < frames * sampleBytes * b.mNumberChannels) return kNoBuffers;
     }
     const double rate = fmt.mSampleRate;
-    prepare(state, unit, rate, config);
+    if (config->enabled) prepare(state, unit, rate, config);
     if (interleaved && isFloat) {
         runChain(unit, rate, static_cast<float *>(b0.mData), frames, config);
     } else {
@@ -425,6 +490,7 @@ static void startDiagnostics() {
     dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, reloadQueue);
     dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC, 250 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(t, ^{
+        updateCastState();
         const char *process = getprogname();
         const Config *c = active.load(std::memory_order_acquire);
         uint64_t slotsReady = 0;
@@ -443,13 +509,14 @@ static void startDiagnostics() {
         char text[512];
         const uint64_t fmt = statFormat.load(std::memory_order_relaxed);
         snprintf(text, sizeof(text), "time=%ld pid=%d hook=%d source=%u enabled=%d bands=%lu fx=%d calls=%llu nested=%llu frames=%llu "
-                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu route=%s rule=%s\n",
+                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu route=%s rule=%s cast=%d cast_frames=%llu\n",
                  (long)time(nullptr), getpid(), hookedRenderOK ? 1 : 0, configSource.load(std::memory_order_relaxed),
                  c && c->enabled ? 1 : 0, c ? (unsigned long)c->count : 0ul, c && c->fxActive ? 1 : 0,
                  (unsigned long long)statCalls.load(std::memory_order_relaxed), (unsigned long long)statNested.load(std::memory_order_relaxed),
                  (unsigned long long)statFrames.load(std::memory_order_relaxed), (unsigned long long)(fmt & 0xffffffff),
                  (unsigned long long)((fmt >> 32) & 0xff), (unsigned long long)((fmt >> 40) & 0xff), (unsigned long long)((fmt >> 48) & 0xff),
-                 (unsigned long long)(fmt >> 56), (unsigned long long)(uint32_t)statRate.load(std::memory_order_relaxed), currentRouteName, currentRule);
+                 (unsigned long long)(fmt >> 56), (unsigned long long)(uint32_t)statRate.load(std::memory_order_relaxed), currentRouteName, currentRule,
+                 castActive.load(std::memory_order_relaxed) ? 1 : 0, (unsigned long long)castFrames.load(std::memory_order_relaxed));
         static const char *dirs[] = {"/var/jb/var/mobile/Library/Preferences", "/var/tmp", "/tmp"};
         for (const char *dir : dirs) {
             char path[256];

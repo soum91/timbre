@@ -18,6 +18,15 @@ if [ "${1:-configure}" = configure ]; then
         cp /var/mobile/Library/Preferences/com.soum91.timbreaudio.plist "$PREFS/" 2>/dev/null || true
     fi
     chown mobile:mobile "$PREFS/com.soum91.timbreaudio.plist" 2>/dev/null || true
+    # Cast daemon: (re)load under launchd so a new binary takes effect.
+    DAEMON=/var/jb/Library/LaunchDaemons/com.soum91.timbrecastd.plist
+    LAUNCHCTL=/var/jb/usr/bin/launchctl
+    [ -x "$LAUNCHCTL" ] || LAUNCHCTL=launchctl
+    if [ -e "$DAEMON" ]; then
+        chown root:wheel "$DAEMON" 2>/dev/null; chmod 644 "$DAEMON" 2>/dev/null
+        "$LAUNCHCTL" unload "$DAEMON" >/dev/null 2>&1 || true
+        "$LAUNCHCTL" load -w "$DAEMON" >/dev/null 2>&1 || true
+    fi
     # Respringing does not restart the audio daemon; restart it so the new tweak loads now.
     "$HELPER" restart-audio >/dev/null 2>&1 || for p in mediaserverd audiomxd; do
         killall -9 "$p" 2>/dev/null || pkill -9 -x "$p" 2>/dev/null || true
