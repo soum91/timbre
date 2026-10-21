@@ -1,4 +1,6 @@
+
 name: Build Rootless DEB and Publish Sileo Repo
+
 on:
   push:
     branches: [timbre-rootless]
@@ -8,37 +10,73 @@ on:
       - "scripts/generate-repo.sh"
       - ".github/workflows/rootless-deb.yml"
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   build:
     runs-on: macos-15
+
     env:
       THEOS: ${{ github.workspace }}/theos
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install build dependencies
         run: |
           brew install ldid dpkg
           command -v ldid
           command -v dpkg-scanpackages
-      - name: Install Theos and SDK
+
+      - name: Install Theos and iOS SDK
         run: |
-          git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
-          git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
+          git clone --depth 1 --recursive \
+            https://github.com/theos/theos.git "$THEOS"
+
+          git clone --depth 1 \
+            https://github.com/theos/sdks.git /tmp/theos-sdks
+
           cp -R /tmp/theos-sdks/*.sdk "$THEOS/sdks/"
+
+      - name: Fix maintainer script permissions
+        run: |
+          chmod 755 Tweak/layout/DEBIAN/postinst
+          chmod 755 Tweak/layout/DEBIAN/prerm
+
+          ls -l Tweak/layout/DEBIAN/
+
       - name: Build tweak and controller app
         run: |
-          make -C Tweak clean package FINALPACKAGE=1 ARCHS=arm64
+          make -C Tweak clean package \
+            FINALPACKAGE=1 \
+            ARCHS=arm64
+
           ls -lh Tweak/packages/*.deb
-      - uses: actions/upload-artifact@v4
+
+      - name: Verify package contents
+        run: |
+          DEB=$(find Tweak/packages -name '*.deb' -print -quit)
+          test -n "$DEB"
+
+          dpkg-deb --contents "$DEB"
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
         with:
           name: timbre-rootless-with-app
           path: Tweak/packages/*.deb
           if-no-files-found: error
+          retention-days: 30
+
       - name: Generate APT repository
-        run: bash scripts/generate-repo.sh
-      - name: Publish gh-pages
+        run: |
+          bash scripts/generate-repo.sh
+
+      - name: Publish Sileo repository
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
