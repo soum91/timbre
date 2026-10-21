@@ -1,0 +1,43 @@
+
+name: Build Rootless DEB
+
+on:
+  push:
+    branches: [timbre-rootless]
+    paths:
+      - "Tweak/**"
+      - "NativeDSP/**"
+      - ".github/workflows/rootless-deb.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      THEOS: ${{ github.workspace }}/theos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos and SDKs
+        run: |
+          git clone --depth 1 --recursive \
+            https://github.com/theos/theos.git "$THEOS"
+          git clone --depth 1 \
+            https://github.com/theos/sdks.git /tmp/theos-sdks
+          cp -R /tmp/theos-sdks/*.sdk "$THEOS/sdks/"
+
+      - name: Build experimental rootless DEB
+        run: |
+          sed -i '' 's/-fno-exceptions/-fexceptions/' Tweak/Makefile
+          make -C Tweak clean package FINALPACKAGE=1 ARCHS=arm64
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: timbre-rootless-deb
+          path: Tweak/packages/*.deb
+          if-no-files-found: error
