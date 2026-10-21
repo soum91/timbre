@@ -50,11 +50,25 @@ jobs:
 
       - name: Build tweak and controller app
         run: |
+          set -o pipefail
           make -C Tweak clean package \
             FINALPACKAGE=1 \
-            ARCHS=arm64
+            ARCHS=arm64 2>&1 | tee build.log
 
           ls -lh Tweak/packages/*.deb
+
+      - name: Publish build log on failure
+        if: failure()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          cp build.log /tmp/build.log 2>/dev/null || echo "no log" > /tmp/build.log
+          git checkout --orphan ci-logs
+          git rm -rfq . || true
+          cp /tmp/build.log build.log
+          git add build.log
+          git commit -qm "Build log for ${GITHUB_SHA}"
+          git push -f origin ci-logs
 
       - name: Verify package contents
         run: |
