@@ -1,1 +1,1 @@
-{ Filter = { Executables = ( "mediaserverd", "audiomxd" ); }; }
+{ Filter = { Executables = ( "mediaserverd", "audiomxd" ); Bundles = ( "com.apple.springboard" ); }; }

@@ -2,6 +2,8 @@
 // interactive response graph, spatial, reverb, dynamics and presets.
 #import <UIKit/UIKit.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
 #include <math.h>
 #include <notify.h>
 #include <spawn.h>
@@ -140,7 +142,8 @@ static int runHelper(NSString *command, NSString **output);
         @"comp": @{@"on": @NO, @"threshold": @(-24.0), @"knee": @6.0, @"ratio": @3.0, @"attack": @10.0, @"release": @150.0, @"makeup": @0.0},
         @"crossfeed": @{@"on": @NO, @"level": @(-6.0), @"cutoff": @700.0, @"delay": @0.3},
         @"width": @{@"on": @NO, @"width": @1.0, @"balance": @0.0, @"mono": @NO, @"swap": @NO},
-        @"spatial": @{@"on": @NO, @"angle": @30.0, @"amount": @0.8, @"distance": @1.0},
+        @"spatial": @{@"on": @NO, @"angle": @30.0, @"amount": @0.8, @"distance": @1.0, @"mode": @1, @"surround": @0.5, @"height": @0.3},
+        @"routing": @{@"enabled": @NO, @"devices": @{}, @"types": @{}},
         @"reverb": @{@"on": @NO, @"decay": @1.8, @"predelay": @20.0, @"damping": @6000.0, @"width": @1.0, @"mix": @0.25},
         @"limiter": @{@"on": @YES, @"ceiling": @(-1.0)},
         @"presets": @[],
@@ -927,7 +930,13 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     _statusPill.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
     _statusPill.titleLabel.numberOfLines = 2;
     [_statusPill addTarget:self action:@selector(showStatus) forControlEvents:UIControlEventTouchUpInside];
-    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[title, [UIView new], gear, more, _power]];
+    AVRoutePickerView *airplay = [AVRoutePickerView new];
+    airplay.tintColor = UIColor.whiteColor;
+    airplay.activeTintColor = accentColor();
+    airplay.prioritizesVideoDevices = NO;
+    [airplay.widthAnchor constraintEqualToConstant:30].active = YES;
+    [airplay.heightAnchor constraintEqualToConstant:30].active = YES;
+    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[title, [UIView new], airplay, gear, more, _power]];
     head.spacing = 14; head.alignment = UIStackViewAlignmentCenter;
 
     UILabel *pre = [UILabel new];
@@ -1006,6 +1015,11 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(updateStatus) userInfo:nil repeats:YES];
 }
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [_statusTimer invalidate]; _statusTimer = nil; }
+- (void)showOutputs {
+    Class c = NSClassFromString(@"TBRoutesController");
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[c new]];
+    [self presentViewController:nav animated:YES completion:nil];
+}
 - (void)showStatus {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[TBStatusController new]];
     [self presentViewController:nav animated:YES completion:nil];
@@ -1027,6 +1041,14 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         break;
     }
     if (!text) { text = @"● Not loaded in mediaserverd · tap to restart audio"; color = UIColor.systemRedColor; }
+    else {
+        NSDictionary *f = statusFile(@"mediaserverd");
+        NSString *route = [f[@"route"] stringByReplacingOccurrencesOfString:@"_" withString:@" "];
+        if (route.length && ![route isEqualToString:@"unknown"]) {
+            NSString *rule = f[@"rule"];
+            text = [text stringByAppendingFormat:@"\n%@%@", route, [rule isEqualToString:@"off"] ? @" · off for this output" : [rule isEqualToString:@"preset"] ? @" · using its saved preset" : @""];
+        }
+    }
     if ([TBStore shared].lastError) { text = [TBStore shared].lastError; color = UIColor.systemRedColor; }
     [UIView performWithoutAnimation:^{
         [self->_statusPill setTitle:text forState:UIControlStateNormal];
@@ -1247,7 +1269,8 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         [weakSelf presentViewController:alert animated:YES completion:nil];
     }];
     restart.attributes = UIMenuElementAttributesDestructive;
-    return [UIMenu menuWithTitle:@"" children:@[flat, reset, help, restart]];
+    UIAction *outputs = [UIAction actionWithTitle:@"Output devices" image:[UIImage systemImageNamed:@"hifispeaker.2"] identifier:nil handler:^(UIAction *a) { [weakSelf showOutputs]; }];
+    return [UIMenu menuWithTitle:@"" children:@[outputs, flat, reset, help, restart]];
 }
 @end
 
@@ -1281,6 +1304,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
 - (void)chips:(NSArray<NSDictionary *> *)presets in:(UIStackView *)card;
 - (void)param:(NSString *)title key:(NSString *)keyPath lo:(double)lo hi:(double)hi step:(double)step log:(BOOL)lg unit:(TBUnit)unit in:(UIStackView *)card;
 - (void)toggle:(NSString *)title key:(NSString *)keyPath in:(UIStackView *)card;
+- (void)segment:(NSArray<NSString *> *)options key:(NSString *)keyPath in:(UIStackView *)card;
 @end
 
 @implementation TBEffectsPage {
@@ -1288,6 +1312,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     UIStackView *_root;
     NSMutableArray<TBParam *> *_params;
     NSMutableArray *_switches;  // [UISwitch, keyPath]
+    NSMutableArray *_segments;  // [UISegmentedControl, keyPath]
     NSMutableArray *_sections;  // [card, keyPath]
 }
 - (instancetype)initWithTitle:(NSString *)title symbol:(NSString *)symbol builder:(void (^)(TBEffectsPage *))builder {
@@ -1295,7 +1320,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         self.title = title;
         self.tabBarItem = [[UITabBarItem alloc] initWithTitle:title image:[UIImage systemImageNamed:symbol] tag:0];
         _builder = [builder copy];
-        _params = [NSMutableArray new]; _switches = [NSMutableArray new]; _sections = [NSMutableArray new];
+        _params = [NSMutableArray new]; _switches = [NSMutableArray new]; _sections = [NSMutableArray new]; _segments = [NSMutableArray new];
     }
     return self;
 }
@@ -1414,6 +1439,18 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     [card addArrangedSubview:row];
     [_params addObject:p];
 }
+- (void)segment:(NSArray<NSString *> *)options key:(NSString *)keyPath in:(UIStackView *)card {
+    UISegmentedControl *seg = [[UISegmentedControl alloc] initWithItems:options];
+    seg.selectedSegmentTintColor = accentColor();
+    [seg setTitleTextAttributes:@{NSForegroundColorAttributeName: UIColor.blackColor} forState:UIControlStateSelected];
+    [seg addTarget:self action:@selector(segmented:) forControlEvents:UIControlEventValueChanged];
+    [card addArrangedSubview:seg];
+    [_segments addObject:@[seg, keyPath]];
+}
+- (void)segmented:(UISegmentedControl *)seg {
+    for (NSArray *pair in _segments) if (pair[0] == seg) [[TBStore shared] setValue:@(seg.selectedSegmentIndex) at:pair[1]];
+    [[TBStore shared] changed];
+}
 - (void)toggle:(NSString *)title key:(NSString *)keyPath in:(UIStackView *)card {
     UISwitch *sw = [UISwitch new];
     sw.onTintColor = accentColor();
@@ -1438,6 +1475,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         [UIView performWithoutAnimation:^{ [p.valueButton setTitle:[self textFor:p value:v] forState:UIControlStateNormal]; [p.valueButton layoutIfNeeded]; }];
     }
     for (NSArray *pair in _switches) ((UISwitch *)pair[0]).on = [[store valueAt:pair[1]] boolValue];
+    for (NSArray *pair in _segments) ((UISegmentedControl *)pair[0]).selectedSegmentIndex = [[store valueAt:pair[1]] integerValue];
     for (NSArray *pair in _sections) {
         UIStackView *card = pair[0];
         const BOOL on = [[store valueAt:pair[1]] boolValue];
@@ -1528,14 +1566,14 @@ static NSArray<NSString *> *effectKeys(void) { return @[@"output", @"comp", @"cr
     return nil;
 }
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
-    return s == 0 ? 3 : s == 1 ? (NSInteger)builtInPresets().count : (NSInteger)self.saved.count;
+    return s == 0 ? 4 : s == 1 ? (NSInteger)builtInPresets().count : (NSInteger)self.saved.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"c" forIndexPath:ip];
     UIListContentConfiguration *cfg = [UIListContentConfiguration valueCellConfiguration];
     if (ip.section == 0) {
-        cfg.text = @[@"Save current as preset…", @"Import from clipboard", @"Copy EQ as text"][(NSUInteger)ip.row];
-        cfg.image = [UIImage systemImageNamed:@[@"plus.circle", @"doc.on.clipboard", @"square.and.arrow.up"][(NSUInteger)ip.row]];
+        cfg.text = @[@"Save current as preset…", @"Import from clipboard", @"Copy EQ as text", @"Output devices & auto switching"][(NSUInteger)ip.row];
+        cfg.image = [UIImage systemImageNamed:@[@"plus.circle", @"doc.on.clipboard", @"square.and.arrow.up", @"hifispeaker.2"][(NSUInteger)ip.row]];
         cfg.textProperties.color = accentColor();
         cfg.imageProperties.tintColor = accentColor();
     } else {
@@ -1556,6 +1594,11 @@ static NSArray<NSString *> *effectKeys(void) { return @[@"output", @"comp", @"cr
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [t deselectRowAtIndexPath:ip animated:YES];
     if (ip.section == 0) {
+        if (ip.row == 3) {
+            UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[NSClassFromString(@"TBRoutesController") new]];
+            [self presentViewController:nav animated:YES completion:nil];
+            return;
+        }
         if (ip.row == 0) [self saveCurrent];
         else if (ip.row == 1) [self importClipboard];
         else [self exportClipboard];
@@ -1647,18 +1690,201 @@ static NSArray<NSString *> *effectKeys(void) { return @[@"output", @"comp", @"cr
 }
 @end
 
+#pragma mark - Output devices
+
+static NSString *const kRoutePath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.route.plist";
+static NSString *const kKnownRoutesPath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.routes.plist";
+
+static NSString *routeGroupFor(NSString *type) {
+    if ([type isEqualToString:AVAudioSessionPortBuiltInSpeaker] || [type isEqualToString:AVAudioSessionPortBuiltInReceiver]) return @"speaker";
+    if ([type isEqualToString:AVAudioSessionPortHeadphones] || [type isEqualToString:AVAudioSessionPortLineOut]) return @"wired";
+    if ([type hasPrefix:@"Bluetooth"]) return @"bluetooth";
+    if ([type isEqualToString:AVAudioSessionPortAirPlay]) return @"airplay";
+    if ([type isEqualToString:AVAudioSessionPortCarAudio]) return @"carplay";
+    if ([type isEqualToString:AVAudioSessionPortUSBAudio] || [type isEqualToString:AVAudioSessionPortHDMI]) return @"usb";
+    return @"other";
+}
+static NSArray<NSArray<NSString *> *> *routeGroups(void) {
+    return @[@[@"speaker", @"iPhone speaker", @"iphone"], @[@"wired", @"Wired headphones", @"headphones"],
+             @[@"bluetooth", @"Any Bluetooth device", @"airpods.gen3"], @[@"airplay", @"AirPlay", @"airplayaudio"],
+             @[@"carplay", @"CarPlay", @"car"], @[@"usb", @"USB / HDMI", @"cable.connector"]];
+}
+// The app also records the route while it is open, so the device list fills in even before SpringBoard sees it.
+static void recordCurrentRoute(void) {
+    AVAudioSessionPortDescription *port = AVAudioSession.sharedInstance.currentRoute.outputs.firstObject;
+    if (!port) return;
+    NSDictionary *info = @{@"type": port.portType ?: @"", @"name": port.portName ?: @"", @"uid": port.UID ?: @"", @"group": routeGroupFor(port.portType), @"time": @(time(NULL))};
+    [[NSFileManager defaultManager] createDirectoryAtPath:kRoutePath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:kRoutePath];
+    if (![existing[@"uid"] isEqual:info[@"uid"]] || ![existing[@"type"] isEqual:info[@"type"]]) [info writeToFile:kRoutePath atomically:YES];
+    NSMutableDictionary *known = [[NSDictionary dictionaryWithContentsOfFile:kKnownRoutesPath] mutableCopy] ?: [NSMutableDictionary new];
+    if (port.UID.length) { known[port.UID] = info; [known writeToFile:kKnownRoutesPath atomically:YES]; }
+}
+
+@interface TBRoutesController : UITableViewController
+@end
+@implementation TBRoutesController
+- (instancetype)init {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) self.title = @"Output devices";
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.tableView.backgroundColor = UIColor.blackColor;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(routeChanged) name:AVAudioSessionRouteChangeNotification object:nil];
+    recordCurrentRoute();
+}
+- (void)routeChanged { dispatch_async(dispatch_get_main_queue(), ^{ recordCurrentRoute(); [self.tableView reloadData]; }); }
+- (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (NSMutableDictionary *)routing {
+    NSMutableDictionary *r = [[TBStore shared] valueAt:@"routing"];
+    if (![r isKindOfClass:NSMutableDictionary.class]) { r = [@{@"enabled": @NO, @"devices": [NSMutableDictionary new], @"types": [NSMutableDictionary new]} mutableCopy]; [TBStore shared].config[@"routing"] = r; }
+    for (NSString *k in @[@"devices", @"types"]) if (![r[k] isKindOfClass:NSMutableDictionary.class]) r[k] = [r[k] isKindOfClass:NSDictionary.class] ? [r[k] mutableCopy] : [NSMutableDictionary new];
+    return r;
+}
+- (NSArray<NSDictionary *> *)knownDevices {
+    NSDictionary *known = [NSDictionary dictionaryWithContentsOfFile:kKnownRoutesPath];
+    NSMutableArray *list = [NSMutableArray new];
+    for (NSString *uid in known) {
+        NSDictionary *d = known[uid];
+        if (![d isKindOfClass:NSDictionary.class]) continue;
+        NSString *g = d[@"group"];
+        if ([g isEqualToString:@"speaker"]) continue;  // the built-in speaker is covered by its type row
+        [list addObject:d];
+    }
+    [list sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [b[@"time"] compare:a[@"time"]]; }];
+    return list;
+}
+- (NSString *)describe:(NSDictionary *)rule fallback:(NSString *)fallback {
+    if (![rule isKindOfClass:NSDictionary.class]) return fallback;
+    NSString *mode = rule[@"mode"];
+    if ([mode isEqualToString:@"off"]) return @"Timbre off";
+    if ([mode isEqualToString:@"preset"]) return [NSString stringWithFormat:@"Preset: %@", rule[@"preset"][@"name"] ?: @"?"];
+    return @"Current EQ";
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return 3; }
+- (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s { return @[@"", @"Output types", @"Devices"][(NSUInteger)s]; }
+- (NSString *)tableView:(UITableView *)t titleForFooterInSection:(NSInteger)s {
+    if (s == 0) return @"When on, Timbre switches by output: a device rule wins over its type rule, and anything without a rule uses your current EQ. Changes apply within a second of switching outputs.";
+    if (s == 2) return [self knownDevices].count ? @"Devices appear here once they have been used as the output." : @"Connect a Bluetooth, AirPlay, CarPlay or USB device and it will show up here.";
+    return nil;
+}
+- (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
+    return s == 0 ? 2 : s == 1 ? (NSInteger)routeGroups().count : (NSInteger)[self knownDevices].count;
+}
+- (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"r"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"r"];
+    c.accessoryView = nil; c.accessoryType = UITableViewCellAccessoryNone; c.selectionStyle = UITableViewCellSelectionStyleDefault;
+    UIListContentConfiguration *cfg = [UIListContentConfiguration valueCellConfiguration];
+    NSMutableDictionary *routing = self.routing;
+    if (ip.section == 0 && ip.row == 0) {
+        cfg.text = @"Switch automatically by output";
+        UISwitch *sw = [UISwitch new];
+        sw.onTintColor = accentColor();
+        sw.on = [routing[@"enabled"] boolValue];
+        [sw addTarget:self action:@selector(toggled:) forControlEvents:UIControlEventValueChanged];
+        c.accessoryView = sw;
+        c.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else if (ip.section == 0) {
+        AVAudioSessionPortDescription *port = AVAudioSession.sharedInstance.currentRoute.outputs.firstObject;
+        cfg.text = [NSString stringWithFormat:@"Now: %@", port.portName ?: @"unknown"];
+        NSDictionary *rule = port.UID ? routing[@"devices"][port.UID] : nil;
+        cfg.secondaryText = [self describe:rule ?: routing[@"types"][routeGroupFor(port.portType)] fallback:@"Current EQ"];
+        cfg.image = [UIImage systemImageNamed:@"speaker.wave.2.fill"];
+        c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (ip.section == 1) {
+        NSArray *g = routeGroups()[(NSUInteger)ip.row];
+        cfg.text = g[1];
+        cfg.image = [UIImage systemImageNamed:g[2]];
+        cfg.secondaryText = [self describe:routing[@"types"][g[0]] fallback:@"Current EQ"];
+        c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else {
+        NSDictionary *d = [self knownDevices][(NSUInteger)ip.row];
+        cfg.text = [d[@"name"] length] ? d[@"name"] : d[@"type"];
+        NSString *group = d[@"group"];
+        for (NSArray *g in routeGroups()) if ([g[0] isEqualToString:group]) cfg.image = [UIImage systemImageNamed:g[2]];
+        cfg.secondaryText = [self describe:routing[@"devices"][d[@"uid"]] fallback:@"Follows type"];
+        c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    cfg.imageProperties.tintColor = accentColor();
+    c.contentConfiguration = cfg;
+    return c;
+}
+- (void)toggled:(UISwitch *)sw {
+    self.routing[@"enabled"] = @(sw.on);
+    [[TBStore shared] changed];
+}
+- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [t deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section == 0 && ip.row == 0) return;
+    NSString *bucket, *key, *title;
+    if (ip.section == 0) {
+        AVAudioSessionPortDescription *port = AVAudioSession.sharedInstance.currentRoute.outputs.firstObject;
+        if (!port) return;
+        if ([routeGroupFor(port.portType) isEqualToString:@"speaker"] || !port.UID.length) { bucket = @"types"; key = routeGroupFor(port.portType); }
+        else { bucket = @"devices"; key = port.UID; }
+        title = port.portName;
+    } else if (ip.section == 1) {
+        bucket = @"types"; key = routeGroups()[(NSUInteger)ip.row][0]; title = routeGroups()[(NSUInteger)ip.row][1];
+    } else {
+        NSDictionary *d = [self knownDevices][(NSUInteger)ip.row];
+        bucket = @"devices"; key = d[@"uid"]; title = d[@"name"];
+    }
+    [self chooseRuleFor:bucket key:key title:title source:[t cellForRowAtIndexPath:ip]];
+}
+- (void)chooseRuleFor:(NSString *)bucket key:(NSString *)key title:(NSString *)title source:(UIView *)source {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title message:@"What should Timbre do on this output?" preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    void (^set)(id) = ^(id rule) {
+        TBRoutesController *me = weakSelf;
+        if (!me) return;
+        NSMutableDictionary *routing = me.routing;
+        if (rule) routing[bucket][key] = rule; else [routing[bucket] removeObjectForKey:key];
+        if (rule && ![routing[@"enabled"] boolValue]) routing[@"enabled"] = @YES;  // setting a rule implies wanting it applied
+        [[TBStore shared] changed];
+        [me.tableView reloadData];
+    };
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Use current EQ" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { set(@{@"mode": @"current"}); }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Turn Timbre off" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) { set(@{@"mode": @"off"}); }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Save current EQ + effects for this output" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        TBStore *store = [TBStore shared];
+        NSMutableDictionary *fx = [NSMutableDictionary new];
+        for (NSString *k in effectKeys()) if (store.config[k]) fx[k] = store.config[k];
+        set(@{@"mode": @"preset", @"preset": deepMutable(@{@"name": [NSString stringWithFormat:@"%@ snapshot", title ?: @"Output"], @"preamp": store.config[@"preamp"] ?: @0, @"bands": store.bands, @"effects": fx})});
+    }]];
+    NSMutableArray *presets = [builtInPresets() mutableCopy];
+    NSArray *saved = [[TBStore shared] valueAt:@"presets"];
+    if ([saved isKindOfClass:NSArray.class]) [presets addObjectsFromArray:saved];
+    for (NSDictionary *p in presets)
+        [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Preset: %@", p[@"name"]] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            set(@{@"mode": @"preset", @"preset": deepMutable(p)});
+        }]];
+    if ([bucket isEqualToString:@"devices"])
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Clear (follow type rule)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { set(nil); }]];
+    else
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Clear rule" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { set(nil); }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = source;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+@end
+
 #pragma mark - App
 
 static UIViewController *spatialPage(void) {
     return [[TBEffectsPage alloc] initWithTitle:@"Spatial" symbol:@"headphones" builder:^(TBEffectsPage *p) {
-        UIStackView *s = [p section:@"Virtual speakers" toggle:@"spatial.on" footer:@"Places left and right as speakers in front of you using interaural delay and head shadow. Headphones only. An approximation, not a measured HRTF."];
-        [p chips:@[@{@"name": @"Front stage", @"values": @{@"spatial.angle": @15, @"spatial.distance": @1.0, @"spatial.amount": @0.7}},
-                   @{@"name": @"Near-field", @"values": @{@"spatial.angle": @30, @"spatial.distance": @1.0, @"spatial.amount": @0.8}},
-                   @{@"name": @"Wide room", @"values": @{@"spatial.angle": @55, @"spatial.distance": @2.0, @"spatial.amount": @0.9}},
-                   @{@"name": @"Surround-ish", @"values": @{@"spatial.angle": @80, @"spatial.distance": @1.5, @"spatial.amount": @1.0}}] in:s];
-        [p param:@"Speaker angle" key:@"spatial.angle" lo:5 hi:90 step:1 log:NO unit:TBUnitDeg in:s];
-        [p param:@"Distance" key:@"spatial.distance" lo:.3 hi:5 step:.1 log:NO unit:TBUnitMeters in:s];
+        UIStackView *s = [p section:@"Spatial" toggle:@"spatial.on" footer:@"Immersive upmixes stereo to nine virtual speakers (centre, front, sides, rears and two heights) and renders them through measured MIT KEMAR head responses. Classic is the lighter interaural delay and head-shadow model. Headphones only. This is not Dolby Atmos decoding; Atmos content arrives already rendered to stereo."];
+        [p segment:@[@"Classic", @"Immersive"] key:@"spatial.mode" in:s];
+        [p chips:@[@{@"name": @"Front stage", @"values": @{@"spatial.angle": @20, @"spatial.amount": @0.7, @"spatial.surround": @0.2, @"spatial.height": @0.1}},
+                   @{@"name": @"Studio", @"values": @{@"spatial.angle": @30, @"spatial.amount": @0.85, @"spatial.surround": @0.4, @"spatial.height": @0.25}},
+                   @{@"name": @"Theatre", @"values": @{@"spatial.angle": @40, @"spatial.amount": @1.0, @"spatial.surround": @0.75, @"spatial.height": @0.5}},
+                   @{@"name": @"Wide room", @"values": @{@"spatial.angle": @55, @"spatial.amount": @0.9, @"spatial.surround": @0.6, @"spatial.height": @0.35}}] in:s];
+        [p param:@"Front speaker angle" key:@"spatial.angle" lo:10 hi:60 step:1 log:NO unit:TBUnitDeg in:s];
         [p param:@"Amount" key:@"spatial.amount" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
+        [p param:@"Surround (Immersive)" key:@"spatial.surround" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
+        [p param:@"Height (Immersive)" key:@"spatial.height" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
+        [p param:@"Distance (Classic)" key:@"spatial.distance" lo:.3 hi:5 step:.1 log:NO unit:TBUnitMeters in:s];
         UIStackView *x = [p section:@"Crossfeed" toggle:@"crossfeed.on" footer:@"Bleeds a little of each channel into the other like speakers do, so hard-panned mixes stop feeling inside your skull."];
         [p chips:@[@{@"name": @"Subtle", @"values": @{@"crossfeed.level": @(-9.5), @"crossfeed.cutoff": @650}},
                    @{@"name": @"Natural", @"values": @{@"crossfeed.level": @(-6), @"crossfeed.cutoff": @700}},
@@ -1728,6 +1954,8 @@ static UIViewController *dynamicsPage(void) {
     tabs.tabBar.tintColor = accentColor();
     self.window.rootViewController = tabs;
     [self.window makeKeyAndVisible];
+    recordCurrentRoute();
+    [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { recordCurrentRoute(); }];
     return YES;
 }
 - (void)applicationWillResignActive:(UIApplication *)application { [[TBStore shared] commit]; }

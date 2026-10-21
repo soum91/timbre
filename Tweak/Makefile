@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = TimbreAudio
 TimbreAudio_FILES = Tweak.mm ../NativeDSP/TimbreDSP.cpp
 TimbreAudio_CCFLAGS = -std=c++17 -fexceptions
-TimbreAudio_FRAMEWORKS = AudioToolbox Foundation
+TimbreAudio_FRAMEWORKS = AudioToolbox Foundation Accelerate
 TimbreAudio_LIBRARIES = substrate
 include $(THEOS_MAKE_PATH)/tweak.mk
 
@@ -14,7 +14,7 @@ APPLICATION_NAME = TimbreControl
 TimbreControl_FILES = TimbreControl/main.m
 TimbreControl_RESOURCE_FILES = TimbreControl/Info.plist $(wildcard TimbreControl/Icons/*.png)
 TimbreControl_CODESIGN_FLAGS = -STimbreControl/entitlements.plist
-TimbreControl_FRAMEWORKS = UIKit Foundation
+TimbreControl_FRAMEWORKS = UIKit Foundation AVFoundation AVKit
 TimbreControl_CFLAGS = -fobjc-arc
 include $(THEOS_MAKE_PATH)/application.mk
 

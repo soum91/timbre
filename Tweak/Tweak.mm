@@ -108,7 +108,8 @@ static timbre::EffectsParams parseEffects(NSDictionary *d) {
                flag(w, @"mono", false), flag(w, @"swap", false)};
     NSDictionary *s = section(d, @"spatial");
     p.spatial = {flag(s, @"on", false), number(s, @"angle", 30, 5, 90), number(s, @"amount", 0.8, 0, 1),
-                 number(s, @"distance", 1, 0.3, 5)};
+                 number(s, @"distance", 1, 0.3, 5), (int)number(s, @"mode", 0, 0, 1),
+                 number(s, @"surround", 0.5, 0, 1), number(s, @"height", 0.3, 0, 1)};
     NSDictionary *r = section(d, @"reverb");
     p.reverb = {flag(r, @"on", false), number(r, @"decay", 1.8, 0.2, 8), number(r, @"predelay", 20, 0, 200),
                 number(r, @"damping", 6000, 1000, 16000), number(r, @"width", 1, 0, 1), number(r, @"mix", 0.25, 0, 1)};
@@ -123,6 +124,100 @@ static void ensureEffectSlots() {
         catch (...) { os_log(OS_LOG_DEFAULT, "Timbre: could not allocate effects slot"); return; }
     }
 }
+// ---------------------------------------------------------------------------
+// Output-device profiles. SpringBoard (and the controller app) record the current output route
+// in a file; the audio daemon picks the rule for that route on every reload.
+// ---------------------------------------------------------------------------
+static NSString *const kRoutePath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.route.plist";
+static NSString *const kKnownRoutesPath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.routes.plist";
+char currentRouteName[96] = "unknown";
+char currentRule[64] = "current";
+
+static NSString *routeGroup(NSString *type) {
+    if ([type isEqualToString:@"Speaker"] || [type isEqualToString:@"Receiver"]) return @"speaker";
+    if ([type isEqualToString:@"Headphones"] || [type isEqualToString:@"LineOut"]) return @"wired";
+    if ([type hasPrefix:@"Bluetooth"]) return @"bluetooth";
+    if ([type isEqualToString:@"AirPlay"]) return @"airplay";
+    if ([type isEqualToString:@"CarAudio"]) return @"carplay";
+    if ([type isEqualToString:@"USBAudio"] || [type isEqualToString:@"HDMIOutput"]) return @"usb";
+    return @"other";
+}
+// Returns the settings to use for the current output: unchanged, disabled, or with a preset merged in.
+static NSDictionary *applyRouteRule(NSDictionary *d) {
+    strlcpy(currentRule, "current", sizeof(currentRule));
+    NSDictionary *route = [NSDictionary dictionaryWithContentsOfFile:kRoutePath];
+    NSString *name = [route[@"name"] isKindOfClass:[NSString class]] ? route[@"name"] : @"unknown";
+    strlcpy(currentRouteName, name.UTF8String ?: "unknown", sizeof(currentRouteName));
+    for (char *c = currentRouteName; *c; c++) if (*c == ' ' || *c == '=') *c = '_';
+    NSDictionary *routing = d[@"routing"];
+    if (![routing isKindOfClass:[NSDictionary class]] || ![routing[@"enabled"] boolValue] || ![route isKindOfClass:[NSDictionary class]]) return d;
+    NSString *uid = route[@"uid"], *type = route[@"type"];
+    NSDictionary *devices = routing[@"devices"], *types = routing[@"types"];
+    NSDictionary *rule = nil;
+    if ([uid isKindOfClass:[NSString class]] && [devices isKindOfClass:[NSDictionary class]]) rule = devices[uid];
+    if (![rule isKindOfClass:[NSDictionary class]] && [type isKindOfClass:[NSString class]] && [types isKindOfClass:[NSDictionary class]]) rule = types[routeGroup(type)];
+    if (![rule isKindOfClass:[NSDictionary class]]) return d;
+    NSString *mode = rule[@"mode"];
+    NSMutableDictionary *m = [[d mutableCopy] autorelease];
+    if ([mode isEqualToString:@"off"]) {
+        m[@"enabled"] = @NO;
+        strlcpy(currentRule, "off", sizeof(currentRule));
+    } else if ([mode isEqualToString:@"preset"] && [rule[@"preset"] isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *preset = rule[@"preset"];
+        if ([preset[@"bands"] isKindOfClass:[NSArray class]]) m[@"bands"] = preset[@"bands"];
+        if (preset[@"preamp"]) m[@"preamp"] = preset[@"preamp"];
+        NSDictionary *fx = preset[@"effects"];
+        if ([fx isKindOfClass:[NSDictionary class]]) for (NSString *k in fx) {
+            if ([fx[k] isKindOfClass:[NSDictionary class]] && [m[k] isKindOfClass:[NSDictionary class]]) {
+                NSMutableDictionary *merged = [[m[k] mutableCopy] autorelease];
+                [merged addEntriesFromDictionary:fx[k]];
+                m[k] = merged;
+            } else m[k] = fx[k];
+        }
+        m[@"enabled"] = @YES;
+        snprintf(currentRule, sizeof(currentRule), "preset");
+    }
+    return m;
+}
+
+// SpringBoard side: watch the system output route and record it for the audio daemon.
+static void recordRoute() {
+    @autoreleasepool {
+        Class sessionClass = NSClassFromString(@"AVAudioSession");
+        if (!sessionClass) return;
+        id session = [sessionClass performSelector:@selector(sharedInstance)];
+        id route = [session performSelector:@selector(currentRoute)];
+        NSArray *outputs = [route performSelector:@selector(outputs)];
+        id port = [outputs isKindOfClass:[NSArray class]] ? outputs.firstObject : nil;
+        if (!port) return;
+        NSString *type = [port valueForKey:@"portType"] ?: @"", *name = [port valueForKey:@"portName"] ?: @"", *uid = [port valueForKey:@"UID"] ?: @"";
+        static char lastKey[512] = "";
+        NSString *key = [NSString stringWithFormat:@"%@|%@|%@", type, uid, name];
+        if (!strcmp(lastKey, key.UTF8String ?: "")) return;
+        strlcpy(lastKey, key.UTF8String ?: "", sizeof(lastKey));
+        NSDictionary *info = @{@"type": type, @"name": name, @"uid": uid, @"group": routeGroup(type), @"time": @(time(nullptr))};
+        [[NSFileManager defaultManager] createDirectoryAtPath:kRoutePath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        [info writeToFile:kRoutePath atomically:YES];
+        NSMutableDictionary *known = [[[NSDictionary dictionaryWithContentsOfFile:kKnownRoutesPath] mutableCopy] autorelease] ?: [NSMutableDictionary dictionary];
+        if (uid.length) known[uid] = info;
+        [known writeToFile:kKnownRoutesPath atomically:YES];
+        notify_post(kReloadNotification);
+        os_log(OS_LOG_DEFAULT, "Timbre: output route %{public}@ (%{public}@)", name, type);
+    }
+}
+static void startRouteMonitor() {
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"AVAudioSessionRouteChangeNotification" object:nil
+        queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *) { recordRoute(); }];
+    // Polling as a backstop: route notifications are not guaranteed for every client.
+    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), 2 * NSEC_PER_SEC, NSEC_PER_SEC);
+    dispatch_source_set_event_handler(t, ^{ recordRoute(); });
+    dispatch_resume(t);
+    static dispatch_source_t retained;
+    retained = t;
+    (void)retained;
+}
+
 static void reloadSettings() {
     @autoreleasepool {
         NSDictionary *d = nil;
@@ -133,6 +228,7 @@ static void reloadSettings() {
         }
         configSource.store(source, std::memory_order_relaxed);
         if (!d) d = @{};
+        d = applyRouteRule(d);
         Config *next = new Config;
         next->generation = sequence.fetch_add(1, std::memory_order_relaxed);
         next->enabled = [d[@"enabled"] boolValue];
@@ -347,13 +443,13 @@ static void startDiagnostics() {
         char text[512];
         const uint64_t fmt = statFormat.load(std::memory_order_relaxed);
         snprintf(text, sizeof(text), "time=%ld pid=%d hook=%d source=%u enabled=%d bands=%lu fx=%d calls=%llu nested=%llu frames=%llu "
-                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu\n",
+                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu route=%s rule=%s\n",
                  (long)time(nullptr), getpid(), hookedRenderOK ? 1 : 0, configSource.load(std::memory_order_relaxed),
                  c && c->enabled ? 1 : 0, c ? (unsigned long)c->count : 0ul, c && c->fxActive ? 1 : 0,
                  (unsigned long long)statCalls.load(std::memory_order_relaxed), (unsigned long long)statNested.load(std::memory_order_relaxed),
                  (unsigned long long)statFrames.load(std::memory_order_relaxed), (unsigned long long)(fmt & 0xffffffff),
                  (unsigned long long)((fmt >> 32) & 0xff), (unsigned long long)((fmt >> 40) & 0xff), (unsigned long long)((fmt >> 48) & 0xff),
-                 (unsigned long long)(fmt >> 56), (unsigned long long)(uint32_t)statRate.load(std::memory_order_relaxed));
+                 (unsigned long long)(fmt >> 56), (unsigned long long)(uint32_t)statRate.load(std::memory_order_relaxed), currentRouteName, currentRule);
         static const char *dirs[] = {"/var/jb/var/mobile/Library/Preferences", "/var/tmp", "/tmp"};
         for (const char *dir : dirs) {
             char path[256];
@@ -368,6 +464,11 @@ static void startDiagnostics() {
 }
 __attribute__((constructor)) void initializeTimbre() {
     os_log(OS_LOG_DEFAULT, "Timbre: injected into %{public}s pid %d", getprogname(), getpid());
+    if (!strcmp(getprogname(), "SpringBoard")) {
+        // SpringBoard only tracks the output route; no audio hooks here.
+        dispatch_async(dispatch_get_main_queue(), ^{ startRouteMonitor(); recordRoute(); });
+        return;
+    }
     mach_timebase_info_data_t timebase{};
     mach_timebase_info(&timebase);
     staleTicks = timebase.numer ? (uint64_t)(2e9 * timebase.denom / timebase.numer) : 2000000000ull;
@@ -384,7 +485,7 @@ __attribute__((constructor)) void initializeTimbre() {
         static double lastStamp = -1;
         @autoreleasepool {
             double stamp = 0;
-            for (NSString *path : kPrefsPaths) {
+            for (NSString *path : @[kPrefsPaths[0], kPrefsPaths[1], kRoutePath]) {
                 NSDate *date = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil][NSFileModificationDate];
                 if (date) stamp += date.timeIntervalSince1970;
             }

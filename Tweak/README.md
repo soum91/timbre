@@ -1,4 +1,4 @@
-# Timbre Audio 0.6.0 (experimental)
+# Timbre Audio 0.7.0 (experimental)
 
 Target: Dopamine rootless, iOS 16.x. CI builds the DEB on every push to `timbre-rootless`.
 Local build on a configured Theos installation:
@@ -23,6 +23,20 @@ Darwin notification, with a once-per-second plist poll as fallback.
 - Spatial, Reverb and Dynamics tabs with presets, mirroring the main Timbre app.
 - Presets: built-ins, saved presets (EQ + effects), Equalizer APO / AutoEq import from the
   clipboard and export to the clipboard.
+
+## 0.7.0 additions
+
+**Immersive spatial.** Stereo is upmixed to nine virtual speakers (centre, front pair, sides,
+rears, two front heights) and rendered binaurally with the MIT KEMAR compact diffused HRTF set
+(Bill Gardner and Keith Martin, MIT Media Lab; packaged by mit-hrtf-lib, MIT licence), using
+vDSP convolution. Tables cover 44.1, 48, 88.2 and 96 kHz. This is not Dolby Atmos decoding.
+
+**Output-device profiles.** The tweak also loads into SpringBoard, where it only records the
+current output route to `com.soum91.timbreaudio.route.plist` under the jailbreak root. The audio
+daemon resolves a rule per output (device UID first, then type: speaker, wired, Bluetooth,
+AirPlay, CarPlay, USB/HDMI): current EQ, Timbre off, or a stored preset/snapshot.
+
+**AirPlay picker** in the controller.
 
 ## Hooking and diagnostics
 

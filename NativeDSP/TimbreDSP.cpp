@@ -1,4 +1,9 @@
 #include "TimbreDSP.hpp"
+#include "TimbreHRTF.h"
+#include <cstring>
+#if defined(__APPLE__)
+#include <Accelerate/Accelerate.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -77,7 +82,8 @@ Effects::Effects() {
     for (int i = 0; i < 4; i++) total += scaled(kAllpassTuning[i] + ch * kStereoSpread, fs) + 2;
   }
   const size_t preCap = static_cast<size_t>(0.2 * fs) + 2, shortCap = static_cast<size_t>(0.001 * fs) + 2;
-  total += preCap + 4 * shortCap;
+  const size_t upCap = static_cast<size_t>(0.03 * fs) + 2, histCap = hrtf::kMaxTaps - 1 + kBlock;
+  total += preCap + 4 * shortCap + 6 * upCap + kSources * histCap + 3 * kBlock;
   memory_.assign(total, 0.0f);
   float* at = memory_.data();
   auto take = [&at](Line& l, size_t cap) { l.buf = at; l.cap = cap; l.len = 1; l.pos = 0; at += cap; };
@@ -88,6 +94,9 @@ Effects::Effects() {
     take(spDelay_[ch], shortCap);
   }
   take(pre_, preCap);
+  for (auto& l : upDelay_) take(l, upCap);
+  for (auto& src : src_) { src.hist = at; at += histCap; }
+  accL_ = at; at += kBlock; accR_ = at; at += kBlock; tmp_ = at; at += kBlock;
 }
 
 float Effects::tick(Line& l, float x) noexcept {
@@ -134,6 +143,10 @@ void Effects::reset() noexcept {
     clear(xfDelay_[ch]); clear(spDelay_[ch]);
     xfLP_[ch].z = 0; spLP_[ch].z = 0;
   }
+  for (auto& l : upDelay_) clear(l);
+  for (auto& o : upLP_) o.z = 0;
+  for (auto& o : topLP_) o.z = 0;
+  for (auto& src : src_) std::fill(src.hist, src.hist + hrtf::kMaxTaps - 1 + kBlock, 0.0f);
   compEnv_ = 0;
   limGain_ = 1;
 }
@@ -170,6 +183,24 @@ void Effects::configure(const EffectsParams& p) noexcept {
     spLP_[ch].a = onePoleCoeff(8000.0 - 6000.0 * std::sin(theta), fs);
     spDelay_[ch].len = std::clamp<size_t>(static_cast<size_t>(std::lround(itd * fs)), 1, spDelay_[ch].cap);
     if (p.spatial.on && !old.spatial.on) { clear(spDelay_[ch]); spLP_[ch].z = 0; }
+  }
+
+  // Immersive
+  imAmount_ = static_cast<float>(std::clamp(p.spatial.amount, 0.0, 1.0));
+  imSurround_ = static_cast<float>(std::clamp(p.spatial.surround, 0.0, 1.0));
+  imHeight_ = static_cast<float>(std::clamp(p.spatial.height, 0.0, 1.0));
+  {
+    const double delaysMs[6] = {11, 13, 19, 23, 5, 6};
+    for (int i = 0; i < 6; i++) {
+      upDelay_[i].len = std::clamp<size_t>(static_cast<size_t>(std::lround(delaysMs[i] * 0.001 * fs)), 1, upDelay_[i].cap);
+      upLP_[i].a = onePoleCoeff(i < 2 ? 7000.0 : 4500.0, fs);
+    }
+    for (auto& o : topLP_) o.a = onePoleCoeff(1500.0, fs);
+  }
+  loadHRTF();
+  const bool immersiveNow = p.spatial.on && p.spatial.mode == 1, immersiveBefore = old.spatial.on && old.spatial.mode == 1;
+  if (immersiveNow && (!immersiveBefore || old.spatial.angle != p.spatial.angle)) {
+    for (auto& src : src_) std::fill(src.hist, src.hist + hrtf::kMaxTaps - 1 + kBlock, 0.0f);
   }
 
   // Stereo tools
@@ -228,7 +259,7 @@ void Effects::process(float* s, size_t frames) noexcept {
       R = (R + xfGain_ * cr) * xfNorm_;
     }
 
-    if (p.spatial.on) {
+    if (p.spatial.on && p.spatial.mode != 1) {
       spLP_[0].z += spLP_[0].a * (R - spLP_[0].z);
       spLP_[1].z += spLP_[1].a * (L - spLP_[1].z);
       const float cl = tick(spDelay_[0], spLP_[0].z), cr = tick(spDelay_[1], spLP_[1].z);
@@ -266,7 +297,14 @@ void Effects::process(float* s, size_t frames) noexcept {
       R = R * dry_ + out[1] * wet1_ + out[0] * wet2_;
     }
 
-    L *= outGain_; R *= outGain_;
+    s[2 * i] = L;
+    s[2 * i + 1] = R;
+  }
+
+  if (p.spatial.on && p.spatial.mode == 1) immersive(s, frames);
+
+  for (size_t i = 0; i < frames; i++) {
+    float L = s[2 * i] * outGain_, R = s[2 * i + 1] * outGain_;
 
     if (p.limiter.on) {
       const float peak = std::max(std::fabs(L), std::fabs(R));
@@ -278,6 +316,88 @@ void Effects::process(float* s, size_t frames) noexcept {
 
     s[2 * i] = sanitize(L);
     s[2 * i + 1] = sanitize(R);
+  }
+}
+
+void Effects::loadHRTF() noexcept {
+  if (!(fs_ > 0)) return;
+  // Nearest measured rate; KEMAR tables exist for 44.1, 48, 88.2 and 96 kHz.
+  int r = 0;
+  for (int i = 1; i < 4; i++) if (std::fabs(hrtf::kRates[i] - fs_) < std::fabs(hrtf::kRates[r] - fs_)) r = i;
+  taps_ = hrtf::kTaps[r];
+  const int front = std::clamp(static_cast<int>(std::lround((std::clamp(p_.spatial.angle, 10.0, 60.0) - hrtf::kFrontMin) / hrtf::kFrontStep)), 0, hrtf::kFrontCount - 1);
+  // Sources: centre, front L/R, side L/R, rear L/R, top-front L/R.
+  const int pos[kSources] = {hrtf::kCentre, front, front, hrtf::kSide, hrtf::kSide, hrtf::kRear, hrtf::kRear, hrtf::kTop, hrtf::kTop};
+  for (int k = 0; k < kSources; k++) {
+    src_[k].hNear = hrtf::kData[r][pos[k]][0];
+    src_[k].hFar = hrtf::kData[r][pos[k]][1];
+    src_[k].left = k > 0 && (k % 2 == 1);
+  }
+  double e = 0;
+  for (size_t i = 0; i < taps_; i++) e += double(src_[1].hNear[i]) * src_[1].hNear[i] + double(src_[1].hFar[i]) * src_[1].hFar[i];
+  imNorm_ = e > 1e-9 ? static_cast<float>(1.0 / std::sqrt(e)) : 1.0f;
+}
+
+namespace {
+// y[i] = sum_k h[k] * x[i - k], where x points at the first new sample and has taps-1 samples of history before it.
+inline void convolve(const float* x, const float* h, size_t taps, float* y, size_t n) {
+#if defined(__APPLE__)
+  vDSP_conv(x - (taps - 1), 1, h + taps - 1, -1, y, 1, n, taps);
+#else
+  for (size_t i = 0; i < n; i++) {
+    float acc = 0;
+    for (size_t k = 0; k < taps; k++) acc += h[k] * x[static_cast<std::ptrdiff_t>(i) - static_cast<std::ptrdiff_t>(k)];
+    y[i] = acc;
+  }
+#endif
+}
+}
+
+void Effects::immersive(float* s, size_t frames) noexcept {
+  if (!taps_) return;
+  const size_t hist = taps_ - 1;
+  const float dry = 1.0f - imAmount_, wet = imAmount_ * imNorm_;
+  for (size_t off = 0; off < frames; off += kBlock) {
+    const size_t n = std::min(kBlock, frames - off);
+    // Upmix stereo to nine speaker feeds.
+    for (size_t i = 0; i < n; i++) {
+      const float L = s[2 * (off + i)], R = s[2 * (off + i) + 1];
+      const float M = 0.5f * (L + R), S = 0.5f * (L - R), C = 0.5f * M;
+      float sides[4];
+      for (int d = 0; d < 4; d++) {
+        upLP_[d].z += upLP_[d].a * (S - upLP_[d].z);
+        sides[d] = tick(upDelay_[d], upLP_[d].z);
+      }
+      topLP_[0].z += topLP_[0].a * (L - topLP_[0].z);
+      topLP_[1].z += topLP_[1].a * (R - topLP_[1].z);
+      const float tl = tick(upDelay_[4], L - topLP_[0].z), tr = tick(upDelay_[5], R - topLP_[1].z);
+      const float feeds[kSources] = {
+        C, L - 0.5f * C, R - 0.5f * C,
+        0.6f * imSurround_ * sides[0], -0.6f * imSurround_ * sides[1],
+        0.45f * imSurround_ * sides[2], -0.45f * imSurround_ * sides[3],
+        0.5f * imHeight_ * tl, 0.5f * imHeight_ * tr,
+      };
+      for (int k = 0; k < kSources; k++) src_[k].hist[hist + i] = feeds[k];
+    }
+    // Binaural render.
+    std::fill(accL_, accL_ + n, 0.0f);
+    std::fill(accR_, accR_ + n, 0.0f);
+    for (int k = 0; k < kSources; k++) {
+      const float* x = src_[k].hist + hist;
+      float* nearAcc = src_[k].left ? accL_ : accR_;
+      float* farAcc = src_[k].left ? accR_ : accL_;
+      convolve(x, src_[k].hNear, taps_, tmp_, n);
+      for (size_t i = 0; i < n; i++) nearAcc[i] += tmp_[i];
+      convolve(x, src_[k].hFar, taps_, tmp_, n);
+      for (size_t i = 0; i < n; i++) farAcc[i] += tmp_[i];
+      std::memmove(src_[k].hist, src_[k].hist + n, hist * sizeof(float));
+    }
+    for (size_t i = 0; i < n; i++) {
+      float& L = s[2 * (off + i)];
+      float& R = s[2 * (off + i) + 1];
+      L = L * dry + accL_[i] * wet;
+      R = R * dry + accR_[i] * wet;
+    }
   }
 }
 }

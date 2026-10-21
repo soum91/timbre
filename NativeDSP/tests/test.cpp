@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <vector>
+#include <algorithm>
 int main() {
  using namespace timbre;
  StereoEQ eq(48000);
@@ -45,6 +46,23 @@ int main() {
   double tail=0;for(size_t i=20000;i<imp.size();i++){assert(std::isfinite(imp[i]));tail+=std::abs(imp[i]);}
   assert(tail>1e-4);
   assert(effectsActive(p)&&!effectsActive([]{EffectsParams q;q.limiter.on=false;return q;}()));
+ }
+ {
+  // Immersive: finite, energetic, and a hard-left input lands louder in the left ear.
+  Effects fx; EffectsParams p; p.limiter.on=false; p.spatial.on=true; p.spatial.mode=1; p.spatial.amount=1;
+  for(double rate:{44100.0,48000.0,96000.0}){
+   assert(fx.prepare(rate)); fx.configure(p); fx.reset();
+   std::vector<float> buf(4800*2,0.f);
+   for(size_t i=0;i<4800;i++){buf[2*i]=std::sin(i*0.07f)*0.5f;buf[2*i+1]=0;}
+   fx.process(buf.data(),4800);
+   double eL=0,eR=0;for(size_t i=2400;i<4800;i++){assert(std::isfinite(buf[2*i])&&std::isfinite(buf[2*i+1]));eL+=buf[2*i]*buf[2*i];eR+=buf[2*i+1]*buf[2*i+1];}
+   assert(eL>1e-3&&eL>eR*1.5);
+  }
+  // Odd block sizes give the same result as one big block.
+  std::vector<float> a(3000*2),b;for(size_t i=0;i<a.size();i++)a[i]=std::sin(i*0.013f)*0.3f;b=a;
+  fx.prepare(48000);fx.configure(p);fx.reset();fx.process(a.data(),3000);
+  fx.reset();for(size_t off=0;off<3000;){size_t n=std::min<size_t>(37+off%300,3000-off);fx.process(b.data()+2*off,n);off+=n;}
+  for(size_t i=0;i<a.size();i++)assert(std::abs(a[i]-b[i])<1e-4f);
  }
  std::cout<<"PASS: native DSP tests\n";
 }

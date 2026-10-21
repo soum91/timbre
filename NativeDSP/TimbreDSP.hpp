@@ -25,7 +25,8 @@ private:
 struct CompressorParams { bool on=false; double threshold=-24, knee=6, ratio=3, attack=10, release=150, makeup=0; };
 struct CrossfeedParams { bool on=false; double level=-6, cutoff=700, delay=0.3; };
 struct WidthParams { bool on=false; double width=1, balance=0; bool mono=false, swap=false; };
-struct SpatialParams { bool on=false; double angle=30, amount=0.8, distance=1; };
+// mode 0: classic interaural delay/head shadow; mode 1: Immersive (stereo upmix to 9 virtual speakers rendered with KEMAR HRTFs).
+struct SpatialParams { bool on=false; double angle=30, amount=0.8, distance=1; int mode=0; double surround=0.5, height=0.3; };
 struct ReverbParams { bool on=false; double decay=1.8, predelay=20, damping=6000, width=1, mix=0.25; };
 struct LimiterParams { bool on=true; double ceiling=-1; };
 struct EffectsParams {
@@ -50,6 +51,16 @@ private:
   struct Line { float* buf=nullptr; size_t cap=0, len=1, pos=0; };
   struct Comb { Line line; float store=0, feedback=0, damp1=0, damp2=1; };
   struct OnePole { float a=1, z=0; };
+  static constexpr int kSources = 9;
+  static constexpr size_t kBlock = 256;
+  struct Source { float* hist=nullptr; const float* hNear=nullptr; const float* hFar=nullptr; bool left=false; };
+  void loadHRTF() noexcept;
+  void immersive(float* interleaved, size_t frames) noexcept;
+  Source src_[kSources];
+  size_t taps_=0;
+  float* accL_=nullptr; float* accR_=nullptr; float* tmp_=nullptr;
+  Line upDelay_[6]; OnePole upLP_[6]; OnePole topLP_[2];
+  float imAmount_=0, imSurround_=0, imHeight_=0, imNorm_=1;
   static float tick(Line& l, float x) noexcept;
   static void clear(Line& l) noexcept;
   void clearReverb() noexcept;
