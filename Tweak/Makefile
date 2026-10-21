@@ -19,7 +19,7 @@ TimbreControl_CFLAGS = -fobjc-arc
 include $(THEOS_MAKE_PATH)/application.mk
 
 TOOL_NAME = timbrectl
-timbrectl_FILES = timbrectl/main.c
+timbrectl_FILES = Helper/main.c
 timbrectl_INSTALL_PATH = /usr/libexec
-timbrectl_CODESIGN_FLAGS = -Stimbrectl/entitlements.plist
+timbrectl_CODESIGN_FLAGS = -SHelper/entitlements.plist
 include $(THEOS_MAKE_PATH)/tool.mk
