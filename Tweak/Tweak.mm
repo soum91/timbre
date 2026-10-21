@@ -151,6 +151,7 @@ __attribute__((constructor)) void initializeTimbre() {
     // Intentional lifetime for daemon. Capture retains dispatch source.
     static dispatch_source_t retainedTimer;
     retainedTimer=timer;
+    (void)retainedTimer;
     void *renderSymbol=dlsym(RTLD_DEFAULT,"AudioUnitRender");
     if(renderSymbol) MSHookFunction(renderSymbol,(void*)&hookedRender,(void**)&originalRender);
     void *uninitSymbol=dlsym(RTLD_DEFAULT,"AudioUnitUninitialize");
