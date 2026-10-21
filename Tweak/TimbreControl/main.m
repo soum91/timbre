@@ -265,10 +265,50 @@ typedef struct {
     int source, bands, slots;
     uint64_t calls, nested, frames, format, rate;
 } TBDaemonStatus;
+// The daemon's sandbox blocks Darwin notify state, so the status file it writes under the jailbreak root
+// is the primary source. Notify state is kept as a fallback for setups where it does get through.
+static NSDictionary<NSString *, NSString *> *statusFile(NSString *process) {
+    for (NSString *dir in @[@"/var/jb/var/mobile/Library/Preferences", @"/var/tmp", @"/tmp"]) {
+        NSString *path = [NSString stringWithFormat:@"%@/com.soum91.timbreaudio.status.%@.txt", dir, process];
+        NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        if (!text.length) continue;
+        NSMutableDictionary *d = [NSMutableDictionary new];
+        for (NSString *token in [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) {
+            NSRange eq = [token rangeOfString:@"="];
+            if (eq.location != NSNotFound) d[[token substringToIndex:eq.location]] = [token substringFromIndex:eq.location + 1];
+        }
+        if (d[@"time"]) return d;
+    }
+    return nil;
+}
+static uint64_t fileValue(NSDictionary *d, NSString *key) {
+    NSString *v = d[key];
+    if (!v) return 0;
+    if ([v hasPrefix:@"0x"]) return strtoull(v.UTF8String, NULL, 16);
+    return strtoull(v.UTF8String, NULL, 10);
+}
 static TBDaemonStatus daemonStatus(NSString *process) {
     TBDaemonStatus s = {0};
+    NSDictionary *f = statusFile(process);
+    const long now = (long)time(NULL);
+    if (f && labs(now - (long)fileValue(f, @"time")) <= 4) {
+        s.alive = YES;
+        s.pid = (pid_t)fileValue(f, @"pid");
+        s.hooked = fileValue(f, @"hook") != 0;
+        s.source = (int)fileValue(f, @"source");
+        s.enabled = fileValue(f, @"enabled") != 0;
+        s.effects = fileValue(f, @"fx") != 0;
+        s.bands = (int)fileValue(f, @"bands");
+        s.calls = fileValue(f, @"calls");
+        s.nested = fileValue(f, @"nested");
+        s.frames = fileValue(f, @"frames");
+        s.format = (fileValue(f, @"format_flags") & 0xffffffff) | (fileValue(f, @"channels") & 0xff) << 32 | (fileValue(f, @"bits") & 0xff) << 40 |
+                   (fileValue(f, @"buffers") & 0xff) << 48 | (fileValue(f, @"result") & 0xff) << 56;
+        s.rate = fileValue(f, @"rate");
+        return s;
+    }
     const uint64_t info = statusValue(process, @"info"), beat = statusValue(process, @"heartbeat");
-    s.alive = beat && labs((long)time(NULL) - (long)beat) <= 4;
+    s.alive = beat && labs(now - (long)beat) <= 4;
     s.pid = (pid_t)(info >> 32);
     s.hooked = info & 1;
     s.source = (int)((info >> 2) & 3);
@@ -936,6 +976,17 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     root.spacing = 10;
     [root setCustomSpacing:14 afterView:_graph];
     root.translatesAutoresizingMaskIntoConstraints = NO;
+    // Everything hugs its content except the fader strips, which take all remaining height.
+    for (UIView *v in @[head, _statusPill, preRow, _graph]) {
+        [v setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+        [v setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    }
+    [_scroller setContentHuggingPriority:1 forAxis:UILayoutConstraintAxisVertical];
+    [_scroller setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisVertical];
+    [_scroller.heightAnchor constraintGreaterThanOrEqualToConstant:230].active = YES;
+    NSLayoutConstraint *graphHeight = [_graph.heightAnchor constraintEqualToAnchor:self.view.heightAnchor multiplier:.24];
+    graphHeight.priority = UILayoutPriorityDefaultHigh;
+    graphHeight.active = YES;
     [self.view addSubview:root];
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -943,7 +994,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         [root.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-6],
         [root.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:12],
         [root.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-12],
-        [_graph.heightAnchor constraintEqualToAnchor:self.view.heightAnchor multiplier:.24],
+        [_graph.heightAnchor constraintGreaterThanOrEqualToConstant:140],
     ]];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(reloadAll) name:kChanged object:nil];
     [self reloadAll];
