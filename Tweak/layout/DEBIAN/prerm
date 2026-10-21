@@ -1,0 +1,10 @@
+#!/bin/sh
+# Deregister only when removing, not while upgrading the installed app.
+if [ "${1:-}" = remove ]; then
+    UICACHE=/var/jb/usr/bin/uicache
+    [ -x "$UICACHE" ] || UICACHE=/usr/bin/uicache
+    if [ -x "$UICACHE" ]; then
+        "$UICACHE" -u /var/jb/Applications/TimbreControl.app || true
+    fi
+fi
+exit 0

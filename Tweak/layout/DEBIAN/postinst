@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+# A rootless app is installed under /var/jb/Applications.
+# Register it explicitly with LaunchServices/SpringBoard after dpkg unpacks it.
+if [ "${1:-configure}" = configure ]; then
+    UICACHE=/var/jb/usr/bin/uicache
+    [ -x "$UICACHE" ] || UICACHE=/usr/bin/uicache
+    if [ -x "$UICACHE" ]; then
+        "$UICACHE" -p /var/jb/Applications/TimbreControl.app || true
+    fi
+fi
+exit 0
