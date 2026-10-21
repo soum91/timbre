@@ -1,6 +1,6 @@
 Package: com.soum91.timbreaudio
 Name: Timbre Audio (Experimental)
-Version: 0.3.1
+Version: 0.3.2
 Architecture: iphoneos-arm64
 Description: Experimental rootless system audio DSP with Timbre control app; not device validated
 Maintainer: soum91
