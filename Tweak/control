@@ -1,0 +1,9 @@
+Package: com.soum91.timbreaudio
+Name: Timbre Audio (Experimental)
+Version: 0.2.0
+Architecture: iphoneos-arm64
+Description: Experimental rootless system audio tweak scaffold (processing disabled)
+Maintainer: soum91
+Author: soum91
+Section: Tweaks
+Depends: mobilesubstrate
