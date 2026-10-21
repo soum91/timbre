@@ -1,70 +1,160 @@
-// Experimental rootless audio rendering hook, not validated on iOS 16.1.1 hardware.
-#include <AudioToolbox/AudioToolbox.h>
-#include <Foundation/Foundation.h>
-#include <substrate.h>
-#include <os/log.h>
+// Timbre experimental system-audio EQ for Dopamine rootless.
+// AudioUnitRender interception is not guaranteed to catch every iOS playback route.
+#import <AudioToolbox/AudioToolbox.h>
+#import <Foundation/Foundation.h>
+#import <substrate.h>
+#import <os/log.h>
 #include <dlfcn.h>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include "../NativeDSP/TimbreDSP.hpp"
+
 namespace {
-using RenderFn=OSStatus (*)(AudioUnit,AudioUnitRenderActionFlags*,const AudioTimeStamp*,UInt32,UInt32,AudioBufferList*);
-using UninitFn=OSStatus (*)(AudioUnit);
-RenderFn originalRender=nullptr; UninitFn originalUninit=nullptr;
-std::atomic<unsigned long long> renderCalls{0},processedFrames{0};
-struct Settings {bool enabled=false; double frequency=1000,gain=6,preamp=-6,q=1;};
-Settings settings;
-struct State { AudioUnit unit=nullptr;double sampleRate=0,z1[2]{},z2[2]{};timbre::Coeffs coeff{};bool ready=false,inHook=false; };
-thread_local State tls;
-void process(float *data,UInt32 frames,AudioUnit unit,double rate) {
- State &s=tls;
- if(!s.ready||s.unit!=unit||s.sampleRate!=rate){
-  timbre::Band b{true,timbre::FilterType::Peaking,settings.frequency,settings.gain,settings.q};
-  s.coeff=timbre::coefficients(b,rate);s.unit=unit;s.sampleRate=rate;s.ready=true;
-  s.z1[0]=s.z1[1]=s.z2[0]=s.z2[1]=0;
- }
- double gain=std::pow(10.,settings.preamp/20.);
- for(UInt32 i=0;i<frames;i++)for(int c=0;c<2;c++){
-  size_t k=size_t(i)*2+c;double x=data[k]*gain;
-  double y=s.coeff.b0*x+s.z1[c];s.z1[c]=s.coeff.b1*x-s.coeff.a1*y+s.z2[c];s.z2[c]=s.coeff.b2*x-s.coeff.a2*y;
-  data[k]=std::isfinite(y)?static_cast<float>(y):0;
- }
+constexpr size_t kMaxBands = 12;
+static NSString *const kPrefs = @"/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist";
+using RenderFn = OSStatus (*)(AudioUnit, AudioUnitRenderActionFlags *, const AudioTimeStamp *, UInt32, UInt32, AudioBufferList *);
+using UninitFn = OSStatus (*)(AudioUnit);
+RenderFn originalRender = nullptr;
+UninitFn originalUninit = nullptr;
+struct Config {
+    uint64_t generation = 0;
+    bool enabled = false;
+    double preamp = 1;
+    size_t count = 0;
+    timbre::Coeffs coefficients[kMaxBands]{};
+    double sampleRate = 48000;
+    timbre::Band bands[kMaxBands]{};
+};
+// Snapshots are never freed while the daemon runs: render threads can hold old pointers.
+// A typical edit costs < 2 KB. A future implementation should use epoch reclamation.
+std::atomic<const Config *> active{nullptr};
+std::atomic<uint64_t> sequence{1};
+std::atomic<uint64_t> renderCalls{0}, processedFrames{0};
+struct FilterState { double z1[2]{}, z2[2]{}; };
+struct ThreadState {
+    bool inHook = false;
+    AudioUnit unit = nullptr;
+    const Config *config = nullptr;
+    double rate = 0;
+    size_t count = 0;
+    timbre::Coeffs coefficients[kMaxBands]{};
+    FilterState filters[kMaxBands]{};
+};
+thread_local ThreadState state;
+
+static bool valid(double x, double lo, double hi) {
+    return std::isfinite(x) && x >= lo && x <= hi;
 }
-OSStatus render(AudioUnit unit,AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,UInt32 bus,UInt32 frames,AudioBufferList *buffers){
- if(!originalRender)return kAudio_ParamError;
- if(tls.inHook)return originalRender(unit,flags,time,bus,frames,buffers);
- tls.inHook=true;OSStatus err=originalRender(unit,flags,time,bus,frames,buffers);
- renderCalls.fetch_add(1,std::memory_order_relaxed);
- if(err==noErr && settings.enabled && buffers && frames && frames<=UINT32_MAX/8 &&
-    buffers->mNumberBuffers==1 && buffers->mBuffers[0].mData &&
-    buffers->mBuffers[0].mNumberChannels==2 && buffers->mBuffers[0].mDataByteSize>=frames*8){
-  AudioStreamBasicDescription fmt{};UInt32 size=sizeof(fmt);
-  if(AudioUnitGetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,bus,&fmt,&size)==noErr &&
-     fmt.mFormatID==kAudioFormatLinearPCM && (fmt.mFormatFlags & kAudioFormatFlagIsFloat) &&
-     !(fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) && fmt.mBitsPerChannel==32 &&
-     fmt.mChannelsPerFrame==2 && fmt.mBytesPerFrame==8 && std::isfinite(fmt.mSampleRate) &&
-     fmt.mSampleRate>100 && fmt.mSampleRate<384000){
-   process((float*)buffers->mBuffers[0].mData,frames,unit,fmt.mSampleRate);
-   processedFrames.fetch_add(frames,std::memory_order_relaxed);
-  }
- }
- tls.inHook=false;return err;
+static void reloadSettings() {
+    @autoreleasepool {
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kPrefs];
+        if (![d isKindOfClass:[NSDictionary class]]) d = @{};
+        Config *next = new Config;
+        next->generation = sequence.fetch_add(1, std::memory_order_relaxed);
+        next->enabled = [d[@"enabled"] boolValue];
+        double preamp = d[@"preamp"] ? [d[@"preamp"] doubleValue] : -6;
+        next->preamp = std::pow(10., (valid(preamp, -24, 0) ? preamp : -6) / 20.);
+        NSArray *bands = d[@"bands"];
+        if ([bands isKindOfClass:[NSArray class]]) {
+            for (id item in bands) {
+                if (next->count == kMaxBands) break;
+                if (![item isKindOfClass:[NSDictionary class]]) continue;
+                NSDictionary *b = item;
+                if (b[@"enabled"] && ![b[@"enabled"] boolValue]) continue;
+                double f = [b[@"frequency"] doubleValue];
+                double g = [b[@"gain"] doubleValue];
+                double q = [b[@"q"] doubleValue];
+                NSInteger type = [b[@"type"] integerValue];
+                if (!valid(f, 20, 20000) || !valid(g, -24, 24) || !valid(q, 0.2, 10) || type < 0 || type > 7) continue;
+                next->bands[next->count++] = timbre::Band{true, static_cast<timbre::FilterType>(type), f, g, q};
+            }
+        } else {
+            // Backward compatibility with the original single-band controller.
+            double f = d[@"frequency"] ? [d[@"frequency"] doubleValue] : 1000;
+            double g = d[@"gain"] ? [d[@"gain"] doubleValue] : 6;
+            double q = d[@"q"] ? [d[@"q"] doubleValue] : 1;
+            if (valid(f,20,20000) && valid(g,-24,24) && valid(q,0.2,10))
+                next->bands[next->count++] = timbre::Band{true,timbre::FilterType::Peaking,f,g,q};
+        }
+        active.store(next, std::memory_order_release);
+        os_log(OS_LOG_DEFAULT,"Timbre: configuration loaded enabled=%{public}d bands=%{public}lu",(int)next->enabled,(unsigned long)next->count);
+    }
 }
-OSStatus uninit(AudioUnit unit){ if(tls.unit==unit)tls.ready=false;return originalUninit?originalUninit(unit):kAudio_ParamError; }
-__attribute__((constructor)) void init(){
- @autoreleasepool {
- NSDictionary *d=[NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist"];
- if([d isKindOfClass:[NSDictionary class]]){
-  settings.enabled=[d[@"enabled"] boolValue];
-  double f=[d[@"frequency"] doubleValue],g=[d[@"gain"] doubleValue],p=[d[@"preamp"] doubleValue],q=[d[@"q"] doubleValue];
-  if(std::isfinite(f)&&f>=20&&f<=20000)settings.frequency=f;
-  if(std::isfinite(g)&&g>=-12&&g<=12)settings.gain=g;
-  if(std::isfinite(p)&&p>=-24&&p<=0)settings.preamp=p;
-  if(std::isfinite(q)&&q>=0.2&&q<=10)settings.q=q;
- }
- }
- void *r=dlsym(RTLD_DEFAULT,"AudioUnitRender");if(r)MSHookFunction(r,(void*)&render,(void**)&originalRender);
- void *u=dlsym(RTLD_DEFAULT,"AudioUnitUninitialize");if(u)MSHookFunction(u,(void*)&uninit,(void**)&originalUninit);
- os_log(OS_LOG_DEFAULT,"TimbreAudio loaded enabled=%{public}d render=%{public}d",(int)settings.enabled,(int)(originalRender!=nullptr));
+static void prepare(ThreadState &s, AudioUnit unit, double rate, const Config *config) {
+    if (s.unit == unit && s.rate == rate && s.config == config) return;
+    s.unit = unit; s.rate = rate; s.config = config; s.count = 0;
+    for (auto &f : s.filters) f = {};
+    // No allocations: calculating coefficients on route/config change only.
+    for (size_t i=0; i<config->count; ++i) {
+        try { s.coefficients[s.count++] = timbre::coefficients(config->bands[i],rate); }
+        catch (...) { s.count = 0; return; }
+    }
+}
+static void process(float *samples, UInt32 frames, const Config *config) noexcept {
+    for (UInt32 i=0; i<frames; ++i) for (unsigned ch=0; ch<2; ++ch) {
+        const size_t at = size_t(i)*2+ch;
+        double x = samples[at] * config->preamp;
+        for (size_t j=0; j<state.count; ++j) {
+            const auto &k=state.coefficients[j]; auto &z=state.filters[j];
+            double y=k.b0*x+z.z1[ch];
+            z.z1[ch]=k.b1*x-k.a1*y+z.z2[ch];
+            z.z2[ch]=k.b2*x-k.a2*y;
+            x=y;
+        }
+        samples[at]=std::isfinite(x)?static_cast<float>(x):0.f;
+    }
+}
+OSStatus hookedRender(AudioUnit unit, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,
+                      UInt32 bus, UInt32 frames, AudioBufferList *buffers) {
+    if (!originalRender) return kAudio_ParamError;
+    if (state.inHook) return originalRender(unit,flags,time,bus,frames,buffers);
+    state.inHook=true;
+    OSStatus result=originalRender(unit,flags,time,bus,frames,buffers);
+    renderCalls.fetch_add(1,std::memory_order_relaxed);
+    const Config *config=active.load(std::memory_order_acquire);
+    if (result==noErr && config && config->enabled && buffers && frames && frames<=UINT32_MAX/8 &&
+        buffers->mNumberBuffers==1 && buffers->mBuffers[0].mData &&
+        buffers->mBuffers[0].mNumberChannels==2 && buffers->mBuffers[0].mDataByteSize>=frames*8) {
+        AudioStreamBasicDescription fmt{}; UInt32 size=sizeof(fmt);
+        if (AudioUnitGetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,bus,&fmt,&size)==noErr &&
+            fmt.mFormatID==kAudioFormatLinearPCM && (fmt.mFormatFlags&kAudioFormatFlagIsFloat) &&
+            !(fmt.mFormatFlags&kAudioFormatFlagIsNonInterleaved) && fmt.mBitsPerChannel==32 &&
+            fmt.mChannelsPerFrame==2 && fmt.mBytesPerFrame==8 && valid(fmt.mSampleRate,8000,192000)) {
+            prepare(state,unit,fmt.mSampleRate,config);
+            process(static_cast<float*>(buffers->mBuffers[0].mData),frames,config);
+            processedFrames.fetch_add(frames,std::memory_order_relaxed);
+        }
+    }
+    state.inHook=false; return result;
+}
+OSStatus hookedUninit(AudioUnit unit) {
+    if (state.unit==unit) {state.config=nullptr;state.unit=nullptr;}
+    return originalUninit ? originalUninit(unit) : kAudio_ParamError;
+}
+__attribute__((constructor)) void initializeTimbre() {
+    reloadSettings();
+    // Poll on a non-audio queue; no file access in the render callback.
+    dispatch_queue_t queue=dispatch_get_global_queue(QOS_CLASS_UTILITY,0);
+    dispatch_source_t timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,queue);
+    dispatch_source_set_timer(timer,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),NSEC_PER_SEC,200*NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(timer,^{
+        static NSDate *lastDate=nil;
+        NSDictionary *attrs=[[NSFileManager defaultManager] attributesOfItemAtPath:kPrefs error:nil];
+        NSDate *date=attrs[NSFileModificationDate];
+        if ((date && ![date isEqualToDate:lastDate]) || (!date && lastDate)) {
+            lastDate=date;
+            reloadSettings();
+        }
+    });
+    dispatch_resume(timer);
+    // Intentional lifetime for daemon. Capture retains dispatch source.
+    static dispatch_source_t retainedTimer;
+    retainedTimer=timer;
+    void *renderSymbol=dlsym(RTLD_DEFAULT,"AudioUnitRender");
+    if(renderSymbol) MSHookFunction(renderSymbol,(void*)&hookedRender,(void**)&originalRender);
+    void *uninitSymbol=dlsym(RTLD_DEFAULT,"AudioUnitUninitialize");
+    if(uninitSymbol) MSHookFunction(uninitSymbol,(void*)&hookedUninit,(void**)&originalUninit);
+    os_log(OS_LOG_DEFAULT,"Timbre loaded: AudioUnitRender hook=%{public}d",originalRender!=nullptr);
 }
 }
