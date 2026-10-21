@@ -1,5 +1,4 @@
 #!/bin/sh
-set -e
 # A rootless app is installed under /var/jb/Applications.
 # Register it explicitly with LaunchServices/SpringBoard after dpkg unpacks it.
 if [ "${1:-configure}" = configure ]; then
@@ -8,5 +7,20 @@ if [ "${1:-configure}" = configure ]; then
     if [ -x "$UICACHE" ]; then
         "$UICACHE" -p /var/jb/Applications/TimbreControl.app || true
     fi
+    # Root helper used by the app to restart the audio daemon and repair permissions.
+    HELPER=/var/jb/usr/libexec/timbrectl
+    if [ -e "$HELPER" ]; then chown root:wheel "$HELPER" && chmod 4755 "$HELPER"; fi
+    # Settings live under the jailbreak root so sandboxed mediaserverd can read them.
+    PREFS=/var/jb/var/mobile/Library/Preferences
+    mkdir -p "$PREFS" 2>/dev/null || true
+    chown mobile:mobile /var/jb/var/mobile /var/jb/var/mobile/Library "$PREFS" 2>/dev/null || true
+    if [ ! -e "$PREFS/com.soum91.timbreaudio.plist" ] && [ -e /var/mobile/Library/Preferences/com.soum91.timbreaudio.plist ]; then
+        cp /var/mobile/Library/Preferences/com.soum91.timbreaudio.plist "$PREFS/" 2>/dev/null || true
+    fi
+    chown mobile:mobile "$PREFS/com.soum91.timbreaudio.plist" 2>/dev/null || true
+    # Respringing does not restart the audio daemon; restart it so the new tweak loads now.
+    "$HELPER" restart-audio >/dev/null 2>&1 || for p in mediaserverd audiomxd; do
+        killall -9 "$p" 2>/dev/null || pkill -9 -x "$p" 2>/dev/null || true
+    done
 fi
 exit 0

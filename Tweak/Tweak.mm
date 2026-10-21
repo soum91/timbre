@@ -7,6 +7,9 @@
 #include <dlfcn.h>
 #include <notify.h>
 #include <mach/mach_time.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -15,7 +18,12 @@
 namespace {
 constexpr size_t kMaxBands = 16;
 constexpr size_t kEffectSlots = 4;
-static NSString *const kPrefs = @"/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist";
+// The jailbreak-root copy is readable from sandboxed daemons; the legacy path is a fallback.
+static NSString *const kPrefsPaths[] = {
+    @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist",
+    @"/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist",
+};
+constexpr UInt32 kChunk = 512;
 static const char *const kReloadNotification = "com.soum91.timbreaudio.reload";
 using RenderFn = OSStatus (*)(AudioUnit, AudioUnitRenderActionFlags *, const AudioTimeStamp *, UInt32, UInt32, AudioBufferList *);
 using UninitFn = OSStatus (*)(AudioUnit);
@@ -60,6 +68,13 @@ struct Slot {
 };
 Slot slots[kEffectSlots];
 uint64_t staleTicks = 0;
+
+// Diagnostics, published once per second through Darwin notification state so the
+// controller can show what the hook sees without a Mac or a log viewer.
+enum Reject : uint8_t { kOK = 0, kDisabled, kRenderError, kNoBuffers, kNoFormat, kNotPCM, kSampleType, kLayout, kRate };
+std::atomic<uint64_t> statCalls{0}, statNested{0}, statFrames{0}, statFormat{0};
+std::atomic<uint32_t> configSource{0};
+bool hookedRenderOK = false, hookedUninitOK = false;
 
 static bool valid(double x, double lo, double hi) {
     return std::isfinite(x) && x >= lo && x <= hi;
@@ -110,8 +125,14 @@ static void ensureEffectSlots() {
 }
 static void reloadSettings() {
     @autoreleasepool {
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kPrefs];
-        if (![d isKindOfClass:[NSDictionary class]]) d = @{};
+        NSDictionary *d = nil;
+        uint32_t source = 0;
+        for (uint32_t i = 0; i < sizeof(kPrefsPaths) / sizeof(kPrefsPaths[0]) && !d; i++) {
+            NSDictionary *candidate = [NSDictionary dictionaryWithContentsOfFile:kPrefsPaths[i]];
+            if ([candidate isKindOfClass:[NSDictionary class]]) { d = candidate; source = i + 1; }
+        }
+        configSource.store(source, std::memory_order_relaxed);
+        if (!d) d = @{};
         Config *next = new Config;
         next->generation = sequence.fetch_add(1, std::memory_order_relaxed);
         next->enabled = [d[@"enabled"] boolValue];
@@ -144,8 +165,8 @@ static void reloadSettings() {
         if (next->enabled && next->fxActive) ensureEffectSlots();
         const Config *old = active.exchange(next, std::memory_order_acq_rel);
         if (old) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), reloadQueue, ^{ delete old; });
-        os_log(OS_LOG_DEFAULT, "Timbre: configuration loaded enabled=%{public}d bands=%{public}lu effects=%{public}d",
-               (int)next->enabled, (unsigned long)next->count, (int)next->fxActive);
+        os_log(OS_LOG_DEFAULT, "Timbre: configuration source=%{public}u enabled=%{public}d bands=%{public}lu effects=%{public}d",
+               source, (int)next->enabled, (unsigned long)next->count, (int)next->fxActive);
     }
 }
 static void prepare(ThreadState &s, AudioUnit unit, double rate, const Config *config) {
@@ -210,27 +231,81 @@ static void applyEffects(AudioUnit unit, double rate, float *samples, UInt32 fra
     }
     fx->process(samples, frames);
 }
+static void runChain(AudioUnit unit, double rate, float *interleaved, UInt32 frames, const Config *config) noexcept {
+    process(interleaved, frames, config);
+    if (config->fxActive) applyEffects(unit, rate, interleaved, frames, config);
+}
+static uint64_t packFormat(const AudioStreamBasicDescription &f, const AudioBufferList *b, Reject r) {
+    return (uint64_t)f.mFormatFlags | ((uint64_t)(f.mChannelsPerFrame & 0xff) << 32) | ((uint64_t)(f.mBitsPerChannel & 0xff) << 40) |
+           ((uint64_t)(b ? (b->mNumberBuffers & 0xff) : 0) << 48) | ((uint64_t)r << 56);
+}
+static uint64_t packRate(double rate, uint32_t formatID) { return ((uint64_t)formatID << 32) | (uint32_t)rate; }
+std::atomic<uint64_t> statRate{0};
+
+// Converts any supported layout to interleaved float in fixed-size chunks, so the DSP only sees one format.
+static Reject render(AudioUnit unit, UInt32 bus, UInt32 frames, AudioBufferList *buffers, const Config *config) noexcept {
+    if (!buffers || !frames || frames > (1u << 20) || buffers->mNumberBuffers < 1) return kNoBuffers;
+    AudioStreamBasicDescription fmt{}; UInt32 size = sizeof(fmt);
+    if (AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, bus, &fmt, &size) != noErr) return kNoFormat;
+    statRate.store(packRate(fmt.mSampleRate, fmt.mFormatID), std::memory_order_relaxed);
+    Reject r = kOK;
+    const bool isFloat = (fmt.mFormatFlags & kAudioFormatFlagIsFloat) && fmt.mBitsPerChannel == 32;
+    const bool isInt16 = !(fmt.mFormatFlags & kAudioFormatFlagIsFloat) && (fmt.mFormatFlags & kAudioFormatFlagIsSignedInteger) && fmt.mBitsPerChannel == 16;
+    const UInt32 sampleBytes = isFloat ? 4 : 2;
+    const AudioBuffer &b0 = buffers->mBuffers[0];
+    const bool interleaved = buffers->mNumberBuffers == 1 && b0.mNumberChannels == 2;
+    const bool planar = buffers->mNumberBuffers == 2 && b0.mNumberChannels == 1 && buffers->mBuffers[1].mNumberChannels == 1;
+    if (fmt.mFormatID != kAudioFormatLinearPCM) r = kNotPCM;
+    else if (!isFloat && !isInt16) r = kSampleType;
+    else if (!interleaved && !planar) r = kLayout;
+    else if (!valid(fmt.mSampleRate, 8000, 192000)) r = kRate;
+    else if (!config || !config->enabled) r = kDisabled;
+    statFormat.store(packFormat(fmt, buffers, r), std::memory_order_relaxed);
+    if (r != kOK) return r;
+    for (UInt32 i = 0; i < buffers->mNumberBuffers; i++) {
+        const AudioBuffer &b = buffers->mBuffers[i];
+        if (!b.mData || b.mDataByteSize < frames * sampleBytes * b.mNumberChannels) return kNoBuffers;
+    }
+    const double rate = fmt.mSampleRate;
+    prepare(state, unit, rate, config);
+    if (interleaved && isFloat) {
+        runChain(unit, rate, static_cast<float *>(b0.mData), frames, config);
+    } else {
+        static thread_local float scratch[kChunk * 2];
+        for (UInt32 at = 0; at < frames; at += kChunk) {
+            const UInt32 n = std::min(kChunk, frames - at);
+            if (planar && isFloat) {
+                float *L = static_cast<float *>(buffers->mBuffers[0].mData) + at, *R = static_cast<float *>(buffers->mBuffers[1].mData) + at;
+                for (UInt32 i = 0; i < n; i++) { scratch[2 * i] = L[i]; scratch[2 * i + 1] = R[i]; }
+                runChain(unit, rate, scratch, n, config);
+                for (UInt32 i = 0; i < n; i++) { L[i] = scratch[2 * i]; R[i] = scratch[2 * i + 1]; }
+            } else {
+                SInt16 *L, *R; UInt32 stride;
+                if (planar) { L = static_cast<SInt16 *>(buffers->mBuffers[0].mData) + at; R = static_cast<SInt16 *>(buffers->mBuffers[1].mData) + at; stride = 1; }
+                else { L = static_cast<SInt16 *>(b0.mData) + 2 * at; R = L + 1; stride = 2; }
+                for (UInt32 i = 0; i < n; i++) { scratch[2 * i] = L[i * stride] / 32768.f; scratch[2 * i + 1] = R[i * stride] / 32768.f; }
+                runChain(unit, rate, scratch, n, config);
+                for (UInt32 i = 0; i < n; i++) {
+                    L[i * stride] = (SInt16)std::lrintf(std::clamp(scratch[2 * i], -1.f, 32767.f / 32768.f) * 32768.f);
+                    R[i * stride] = (SInt16)std::lrintf(std::clamp(scratch[2 * i + 1], -1.f, 32767.f / 32768.f) * 32768.f);
+                }
+            }
+        }
+    }
+    statFrames.fetch_add(frames, std::memory_order_relaxed);
+    return kOK;
+}
 OSStatus hookedRender(AudioUnit unit, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,
                       UInt32 bus, UInt32 frames, AudioBufferList *buffers) {
     if (!originalRender) return kAudio_ParamError;
-    if (state.inHook) return originalRender(unit, flags, time, bus, frames, buffers);
+    // Mixers pull their inputs with nested AudioUnitRender calls; only the outermost (final mix) is processed.
+    if (state.inHook) { statNested.fetch_add(1, std::memory_order_relaxed); return originalRender(unit, flags, time, bus, frames, buffers); }
     state.inHook = true;
     OSStatus result = originalRender(unit, flags, time, bus, frames, buffers);
+    statCalls.fetch_add(1, std::memory_order_relaxed);
     const Config *config = active.load(std::memory_order_acquire);
-    if (result == noErr && config && config->enabled && buffers && frames && frames <= UINT32_MAX / 8 &&
-        buffers->mNumberBuffers == 1 && buffers->mBuffers[0].mData &&
-        buffers->mBuffers[0].mNumberChannels == 2 && buffers->mBuffers[0].mDataByteSize >= frames * 8) {
-        AudioStreamBasicDescription fmt{}; UInt32 size = sizeof(fmt);
-        if (AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, bus, &fmt, &size) == noErr &&
-            fmt.mFormatID == kAudioFormatLinearPCM && (fmt.mFormatFlags & kAudioFormatFlagIsFloat) &&
-            !(fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) && fmt.mBitsPerChannel == 32 &&
-            fmt.mChannelsPerFrame == 2 && fmt.mBytesPerFrame == 8 && valid(fmt.mSampleRate, 8000, 192000)) {
-            float *samples = static_cast<float *>(buffers->mBuffers[0].mData);
-            prepare(state, unit, fmt.mSampleRate, config);
-            process(samples, frames, config);
-            if (config->fxActive) applyEffects(unit, fmt.mSampleRate, samples, frames, config);
-        }
-    }
+    if (result == noErr) render(unit, bus, frames, buffers, config);
+    else statFormat.store((uint64_t)kRenderError << 56, std::memory_order_relaxed);
     state.inHook = false;
     return result;
 }
@@ -241,6 +316,38 @@ OSStatus hookedUninit(AudioUnit unit) {
         s.owner.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
     }
     return originalUninit ? originalUninit(unit) : kAudio_ParamError;
+}
+static void publish(const char *process, const char *field, uint64_t value) {
+    char name[160];
+    snprintf(name, sizeof(name), "com.soum91.timbreaudio.status.%s.%s", process, field);
+    int token = 0;
+    if (notify_register_check(name, &token) != NOTIFY_STATUS_OK) return;
+    notify_set_state(token, value);
+    notify_cancel(token);
+}
+static void startDiagnostics() {
+    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, reloadQueue);
+    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC, 250 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(t, ^{
+        const char *process = getprogname();
+        const Config *c = active.load(std::memory_order_acquire);
+        uint64_t slotsReady = 0;
+        for (auto &s : slots) if (s.fx.load(std::memory_order_relaxed)) slotsReady++;
+        const uint64_t info = (uint64_t)getpid() << 32 | (hookedRenderOK ? 1 : 0) | (hookedUninitOK ? 2 : 0) |
+                              (uint64_t)(configSource.load(std::memory_order_relaxed) & 3) << 2 |
+                              (c && c->enabled ? 16 : 0) | (c && c->fxActive ? 32 : 0) | (c ? (uint64_t)(c->count & 31) << 6 : 0) | slotsReady << 11;
+        publish(process, "info", info);
+        publish(process, "calls", statCalls.load(std::memory_order_relaxed));
+        publish(process, "nested", statNested.load(std::memory_order_relaxed));
+        publish(process, "frames", statFrames.load(std::memory_order_relaxed));
+        publish(process, "format", statFormat.load(std::memory_order_relaxed));
+        publish(process, "rate", statRate.load(std::memory_order_relaxed));
+        publish(process, "heartbeat", (uint64_t)time(nullptr));
+    });
+    dispatch_resume(t);
+    static dispatch_source_t retained;
+    retained = t;
+    (void)retained;
 }
 __attribute__((constructor)) void initializeTimbre() {
     mach_timebase_info_data_t timebase{};
@@ -258,9 +365,11 @@ __attribute__((constructor)) void initializeTimbre() {
         // A plain timestamp: this file is built without ARC, so caching an NSDate would dangle.
         static double lastStamp = -1;
         @autoreleasepool {
-            NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kPrefs error:nil];
-            NSDate *date = attrs[NSFileModificationDate];
-            const double stamp = date ? date.timeIntervalSince1970 : 0;
+            double stamp = 0;
+            for (NSString *path : kPrefsPaths) {
+                NSDate *date = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil][NSFileModificationDate];
+                if (date) stamp += date.timeIntervalSince1970;
+            }
             if (stamp != lastStamp) {
                 const bool first = lastStamp < 0;
                 lastStamp = stamp;
@@ -275,8 +384,11 @@ __attribute__((constructor)) void initializeTimbre() {
     (void)retainedTimer;
     void *renderSymbol = dlsym(RTLD_DEFAULT, "AudioUnitRender");
     if (renderSymbol) MSHookFunction(renderSymbol, (void *)&hookedRender, (void **)&originalRender);
+    hookedRenderOK = originalRender != nullptr;
     void *uninitSymbol = dlsym(RTLD_DEFAULT, "AudioUnitUninitialize");
     if (uninitSymbol) MSHookFunction(uninitSymbol, (void *)&hookedUninit, (void **)&originalUninit);
+    hookedUninitOK = originalUninit != nullptr;
+    startDiagnostics();
     os_log(OS_LOG_DEFAULT, "Timbre loaded: AudioUnitRender hook=%{public}d", originalRender != nullptr);
 }
 }

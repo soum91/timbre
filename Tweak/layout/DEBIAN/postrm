@@ -1,0 +1,8 @@
+#!/bin/sh
+# Unload the tweak from the audio daemon after removal.
+if [ "${1:-}" = remove ] || [ "${1:-}" = purge ]; then
+    for p in mediaserverd audiomxd; do
+        killall -9 "$p" 2>/dev/null || pkill -9 -x "$p" 2>/dev/null || true
+    done
+fi
+exit 0

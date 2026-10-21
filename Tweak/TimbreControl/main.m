@@ -1,10 +1,19 @@
 // Timbre controller: EQE-style parametric EQ (gain / frequency / Q fader triplets per band),
 // interactive response graph, spatial, reverb, dynamics and presets.
 #import <UIKit/UIKit.h>
+#import <AudioToolbox/AudioToolbox.h>
 #include <math.h>
 #include <notify.h>
+#include <spawn.h>
+#include <signal.h>
+#include <sys/sysctl.h>
+#include <sys/wait.h>
+extern char **environ;
 
-static NSString *const kConfigPath = @"/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist";
+// Primary copy under the jailbreak root (readable by the sandboxed audio daemon), legacy copy kept in sync.
+static NSString *const kConfigPath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist";
+static NSString *const kLegacyConfigPath = @"/var/mobile/Library/Preferences/com.soum91.timbreaudio.plist";
+static NSString *const kHelperPath = @"/var/jb/usr/libexec/timbrectl";
 static NSString *const kChanged = @"TimbreConfigChanged";
 static const char *const kReloadNotification = "com.soum91.timbreaudio.reload";
 static const NSInteger kMaxBands = 16;
@@ -107,8 +116,9 @@ static double roundSignificant(double v, int digits) {
 - (void)commit;
 @end
 
+static int runHelper(NSString *command, NSString **output);
 @implementation TBStore {
-    BOOL _pending;
+    BOOL _pending, _repaired;
 }
 + (instancetype)shared {
     static TBStore *s; static dispatch_once_t once;
@@ -143,7 +153,7 @@ static id deepMutable(id plist) {
     return [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListMutableContainersAndLeaves format:nil error:nil];
 }
 - (void)load {
-    NSDictionary *saved = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    NSDictionary *saved = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: [NSDictionary dictionaryWithContentsOfFile:kLegacyConfigPath];
     NSMutableDictionary *c = [saved isKindOfClass:NSDictionary.class] ? deepMutable(saved) : [NSMutableDictionary new];
     if (!c) c = [NSMutableDictionary new];
     NSDictionary *defaults = [TBStore defaults];
@@ -170,12 +180,130 @@ static id deepMutable(id plist) {
         [self commit];
     });
 }
+- (BOOL)writePrimary {
+    [[NSFileManager defaultManager] createDirectoryAtPath:kConfigPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    return [self.config writeToFile:kConfigPath atomically:YES];
+}
 - (void)commit {
-    BOOL ok = [self.config writeToFile:kConfigPath atomically:YES];
-    self.lastError = ok ? nil : @"Could not write preferences. Check that the controller can write to /var/mobile/Library/Preferences.";
-    if (ok) notify_post(kReloadNotification);
+    BOOL ok = [self writePrimary];
+    if (!ok && !_repaired) {
+        _repaired = YES;
+        runHelper(@"fix-prefs", nil);
+        ok = [self writePrimary];
+    }
+    const BOOL legacy = [self.config writeToFile:kLegacyConfigPath atomically:YES];
+    self.lastError = ok ? nil : legacy ? @"Saved only to /var/mobile. The audio daemon may not be able to read it." : @"Could not save settings anywhere.";
+    if (ok || legacy) notify_post(kReloadNotification);
 }
 @end
+
+
+#pragma mark - Root helper and diagnostics
+
+static int runHelper(NSString *command, NSString **output) {
+    int fds[2];
+    if (pipe(fds) != 0) return -1;
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, fds[0]);
+    const char *argv[] = {"timbrectl", command.UTF8String, NULL};
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, kHelperPath.fileSystemRepresentation, &actions, NULL, (char *const *)argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    close(fds[1]);
+    NSMutableData *data = [NSMutableData new];
+    if (rc == 0) {
+        char buf[256]; ssize_t n;
+        while ((n = read(fds[0], buf, sizeof(buf))) > 0) [data appendBytes:buf length:(NSUInteger)n];
+        int status = 0;
+        waitpid(pid, &status, 0);
+        rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    } else if (output) {
+        *output = [NSString stringWithFormat:@"Could not launch %@ (%s)", kHelperPath, strerror(rc)];
+    }
+    close(fds[0]);
+    if (output && data.length) *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    return rc;
+}
+static int killNamed(const char *name) {
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t len = 0;
+    if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || !len) return 0;
+    len += len / 4;
+    struct kinfo_proc *procs = malloc(len);
+    if (!procs) return 0;
+    int killed = 0;
+    if (sysctl(mib, 3, procs, &len, NULL, 0) == 0)
+        for (size_t i = 0; i < len / sizeof(struct kinfo_proc); i++)
+            if (strncmp(procs[i].kp_proc.p_comm, name, sizeof(procs[i].kp_proc.p_comm)) == 0 && kill(procs[i].kp_proc.p_pid, SIGKILL) == 0) killed++;
+    free(procs);
+    return killed;
+}
+static NSString *restartAudio(void) {
+    NSString *out = nil;
+    if (runHelper(@"restart-audio", &out) == 0) return out ?: @"Audio daemon restarted.";
+    const int n = killNamed("mediaserverd") + killNamed("audiomxd");
+    if (n > 0) return @"Audio daemon restarted.";
+    return [NSString stringWithFormat:@"Could not restart the audio daemon. %@", out ?: @""];
+}
+
+static uint64_t statusValue(NSString *process, NSString *field) {
+    NSString *name = [NSString stringWithFormat:@"com.soum91.timbreaudio.status.%@.%@", process, field];
+    int token = 0;
+    uint64_t v = 0;
+    if (notify_register_check(name.UTF8String, &token) == NOTIFY_STATUS_OK) {
+        notify_get_state(token, &v);
+        notify_cancel(token);
+    }
+    return v;
+}
+typedef struct {
+    BOOL alive, hooked, enabled, effects;
+    pid_t pid;
+    int source, bands, slots;
+    uint64_t calls, nested, frames, format, rate;
+} TBDaemonStatus;
+static TBDaemonStatus daemonStatus(NSString *process) {
+    TBDaemonStatus s = {0};
+    const uint64_t info = statusValue(process, @"info"), beat = statusValue(process, @"heartbeat");
+    s.alive = beat && labs((long)time(NULL) - (long)beat) <= 4;
+    s.pid = (pid_t)(info >> 32);
+    s.hooked = info & 1;
+    s.source = (int)((info >> 2) & 3);
+    s.enabled = (info >> 4) & 1;
+    s.effects = (info >> 5) & 1;
+    s.bands = (int)((info >> 6) & 31);
+    s.slots = (int)((info >> 11) & 7);
+    s.calls = statusValue(process, @"calls");
+    s.nested = statusValue(process, @"nested");
+    s.frames = statusValue(process, @"frames");
+    s.format = statusValue(process, @"format");
+    s.rate = statusValue(process, @"rate");
+    return s;
+}
+static NSString *rejectText(unsigned r) {
+    switch (r) {
+        case 0: return @"processing";
+        case 1: return @"skipped: Timbre is off or settings unreadable";
+        case 2: return @"skipped: render returned an error";
+        case 3: return @"skipped: empty or short buffers";
+        case 4: return @"skipped: could not read stream format";
+        case 5: return @"skipped: not linear PCM";
+        case 6: return @"skipped: unsupported sample type";
+        case 7: return @"skipped: unsupported channel layout";
+        case 8: return @"skipped: unsupported sample rate";
+    }
+    return @"unknown";
+}
+static NSString *formatText(uint64_t f, uint64_t rate) {
+    if (!f && !rate) return @"no audio seen yet";
+    const unsigned flags = (unsigned)(f & 0xffffffff), ch = (unsigned)((f >> 32) & 0xff), bits = (unsigned)((f >> 40) & 0xff), bufs = (unsigned)((f >> 48) & 0xff);
+    NSString *type = (flags & kAudioFormatFlagIsFloat) ? @"float" : (flags & kAudioFormatFlagIsSignedInteger) ? @"int" : @"fixed";
+    NSString *layout = (flags & kAudioFormatFlagIsNonInterleaved) ? @"planar" : @"interleaved";
+    return [NSString stringWithFormat:@"%u-bit %@ %@, %u ch, %u buffer%@, %.0f Hz", bits, type, layout, ch, bufs, bufs == 1 ? @"" : @"s", (double)(uint32_t)rate];
+}
 
 #pragma mark - Vertical fader
 
@@ -560,6 +688,128 @@ static const double kGraphDB = 18;
 - (void)released { [_owner stripChanged:self final:YES]; }
 @end
 
+#pragma mark - Status (EQE-style settings page)
+
+static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"audiomxd"]; }
+
+@interface TBStatusController : UITableViewController
+@end
+@implementation TBStatusController {
+    NSTimer *_timer;
+    NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *_previous;  // calls, nested, frames
+    NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *_rates;
+    NSString *_message;
+}
+- (instancetype)init {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        self.title = @"Status";
+        _previous = [NSMutableDictionary new];
+        _rates = [NSMutableDictionary new];
+    }
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.tableView.backgroundColor = UIColor.blackColor;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
+}
+- (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self tick];
+    _timer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+}
+- (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [_timer invalidate]; _timer = nil; }
+- (void)tick {
+    for (NSString *d in audioDaemons()) {
+        TBDaemonStatus st = daemonStatus(d);
+        NSArray *now = @[@(st.calls), @(st.nested), @(st.frames)];
+        NSArray *before = _previous[d];
+        if (before) {
+            NSMutableArray *r = [NSMutableArray new];
+            for (NSUInteger i = 0; i < 3; i++) [r addObject:@(MAX(0.0, [now[i] doubleValue] - [before[i] doubleValue]))];
+            _rates[d] = r;
+        }
+        _previous[d] = now;
+    }
+    [self.tableView reloadData];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return (NSInteger)audioDaemons().count + 2; }
+- (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s {
+    if (s < (NSInteger)audioDaemons().count) return audioDaemons()[(NSUInteger)s];
+    return s == (NSInteger)audioDaemons().count ? @"Settings file" : @"Actions";
+}
+- (NSString *)tableView:(UITableView *)t titleForFooterInSection:(NSInteger)s {
+    if (s == (NSInteger)audioDaemons().count + 1)
+        return _message ?: @"If a daemon shows Not loaded, restart audio. If it still is not loaded, ElleKit is not injecting into it. Turn off EQE's AudioUnitRender hook while testing Timbre so the audio is not processed twice.";
+    if (s == 0) return @"Calls are outermost AudioUnitRender calls per second; nested are mixer inputs Timbre leaves alone.";
+    return nil;
+}
+- (NSArray<NSArray<NSString *> *> *)rowsForDaemon:(NSString *)d {
+    TBDaemonStatus st = daemonStatus(d);
+    if (!st.alive) return @[@[@"Tweak", st.pid ? @"Stopped reporting" : @"Not loaded"]];
+    NSArray *r = _rates[d];
+    NSString *(^rate)(NSUInteger) = ^NSString *(NSUInteger i) { return r ? [NSString stringWithFormat:@"%.0f /s", [r[i] doubleValue]] : @"…"; };
+    NSString *src = @[@"not readable", @"jailbreak root", @"/var/mobile (legacy)", @"?"][(NSUInteger)st.source];
+    return @[
+        @[@"Tweak", [NSString stringWithFormat:@"Loaded (pid %d)", st.pid]],
+        @[@"AudioUnitRender hook", st.hooked ? @"Installed" : @"Failed"],
+        @[@"Settings", src],
+        @[@"Timbre", st.enabled ? [NSString stringWithFormat:@"On, %d bands%@", st.bands, st.effects ? @" + effects" : @""] : @"Off"],
+        @[@"Render calls", rate(0)],
+        @[@"Nested calls", rate(1)],
+        @[@"Frames processed", rate(2)],
+        @[@"Last stream", formatText(st.format, st.rate)],
+        @[@"Result", rejectText((unsigned)(st.format >> 56))],
+    ];
+}
+- (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
+    const NSInteger n = (NSInteger)audioDaemons().count;
+    if (s < n) return (NSInteger)[self rowsForDaemon:audioDaemons()[(NSUInteger)s]].count;
+    return s == n ? 2 : 3;
+}
+- (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"s"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"s"];
+    UIListContentConfiguration *cfg = [UIListContentConfiguration valueCellConfiguration];
+    cfg.secondaryTextProperties.numberOfLines = 0;
+    const NSInteger n = (NSInteger)audioDaemons().count;
+    c.selectionStyle = UITableViewCellSelectionStyleNone;
+    if (ip.section < n) {
+        NSArray *row = [self rowsForDaemon:audioDaemons()[(NSUInteger)ip.section]][(NSUInteger)ip.row];
+        cfg.text = row[0]; cfg.secondaryText = row[1];
+    } else if (ip.section == n) {
+        NSString *path = ip.row == 0 ? kConfigPath : kLegacyConfigPath;
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+        cfg.text = ip.row == 0 ? @"Jailbreak root" : @"Legacy";
+        cfg.secondaryText = attrs ? [NSString stringWithFormat:@"%@ %@", attrs[NSFileOwnerAccountName], [NSDateFormatter localizedStringFromDate:attrs[NSFileModificationDate] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]] : @"missing";
+        if (ip.row == 0 && [TBStore shared].lastError) cfg.secondaryText = [TBStore shared].lastError;
+    } else {
+        cfg.text = @[@"Restart audio (killall -9 mediaserverd)", @"Save settings again", @"Repair settings permissions"][(NSUInteger)ip.row];
+        cfg.textProperties.color = ip.row == 0 ? UIColor.systemRedColor : accentColor();
+        c.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    c.contentConfiguration = cfg;
+    return c;
+}
+- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [t deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section != (NSInteger)audioDaemons().count + 1) return;
+    if (ip.row == 0) {
+        [[TBStore shared] commit];
+        _message = restartAudio();
+        [_previous removeAllObjects]; [_rates removeAllObjects];
+    } else if (ip.row == 1) {
+        [[TBStore shared] commit];
+        _message = [TBStore shared].lastError ?: @"Saved and sent reload notification.";
+    } else {
+        NSString *out = nil;
+        _message = runHelper(@"fix-prefs", &out) == 0 ? @"Permissions repaired." : (out ?: @"Repair failed.");
+        [[TBStore shared] commit];
+    }
+    [t reloadData];
+}
+@end
+
 #pragma mark - EQ screen
 
 @implementation TBEQController {
@@ -569,6 +819,9 @@ static const double kGraphDB = 18;
     UISwitch *_power;
     UIButton *_preampValue;
     UISlider *_preamp;
+    UIButton *_statusPill;
+    NSTimer *_statusTimer;
+    uint64_t _lastFrames;
     NSInteger _selected;
 }
 - (TBStore *)store { return [TBStore shared]; }
@@ -589,7 +842,16 @@ static const double kGraphDB = 18;
     more.tintColor = UIColor.whiteColor;
     more.showsMenuAsPrimaryAction = YES;
     more.menu = [self moreMenu];
-    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[title, [UIView new], more, _power]];
+    UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
+    [gear setImage:[UIImage systemImageNamed:@"gearshape"] forState:UIControlStateNormal];
+    gear.tintColor = UIColor.whiteColor;
+    [gear addTarget:self action:@selector(showStatus) forControlEvents:UIControlEventTouchUpInside];
+    _statusPill = [UIButton buttonWithType:UIButtonTypeSystem];
+    _statusPill.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
+    _statusPill.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    _statusPill.titleLabel.numberOfLines = 2;
+    [_statusPill addTarget:self action:@selector(showStatus) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[title, [UIView new], gear, more, _power]];
     head.spacing = 14; head.alignment = UIStackViewAlignmentCenter;
 
     UILabel *pre = [UILabel new];
@@ -633,7 +895,7 @@ static const double kGraphDB = 18;
         [_strips.heightAnchor constraintEqualToAnchor:_scroller.frameLayoutGuide.heightAnchor],
     ]];
 
-    UIStackView *root = [[UIStackView alloc] initWithArrangedSubviews:@[head, preRow, _graph, _scroller]];
+    UIStackView *root = [[UIStackView alloc] initWithArrangedSubviews:@[head, _statusPill, preRow, _graph, _scroller]];
     root.axis = UILayoutConstraintAxisVertical;
     root.spacing = 10;
     [root setCustomSpacing:14 afterView:_graph];
@@ -650,7 +912,41 @@ static const double kGraphDB = 18;
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(reloadAll) name:kChanged object:nil];
     [self reloadAll];
 }
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self reloadAll]; }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadAll];
+    [self updateStatus];
+    _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(updateStatus) userInfo:nil repeats:YES];
+}
+- (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [_statusTimer invalidate]; _statusTimer = nil; }
+- (void)showStatus {
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[TBStatusController new]];
+    [self presentViewController:nav animated:YES completion:nil];
+}
+- (void)updateStatus {
+    NSString *text = nil; UIColor *color = nil;
+    for (NSString *d in audioDaemons()) {
+        TBDaemonStatus st = daemonStatus(d);
+        if (!st.alive) continue;
+        const BOOL flowing = st.frames > _lastFrames && _lastFrames > 0;
+        _lastFrames = st.frames;
+        const unsigned reject = (unsigned)(st.format >> 56);
+        if (!st.hooked) { text = [NSString stringWithFormat:@"● Loaded in %@ but the hook failed", d]; color = UIColor.systemRedColor; }
+        else if (st.source == 0) { text = [NSString stringWithFormat:@"● %@ cannot read the settings file. Tap for status", d]; color = UIColor.systemOrangeColor; }
+        else if (!st.enabled) { text = [NSString stringWithFormat:@"● Hooked in %@ · Timbre is off", d]; color = dimColor(); }
+        else if (flowing) { text = [NSString stringWithFormat:@"● Processing in %@", d]; color = UIColor.systemGreenColor; }
+        else if (st.calls == 0 || reject == 0) { text = [NSString stringWithFormat:@"● Hooked in %@ · waiting for audio", d]; color = UIColor.systemYellowColor; }
+        else { text = [NSString stringWithFormat:@"● %@", rejectText(reject)]; color = UIColor.systemOrangeColor; }
+        break;
+    }
+    if (!text) { text = @"● Not loaded in mediaserverd · tap to restart audio"; color = UIColor.systemRedColor; }
+    if ([TBStore shared].lastError) { text = [TBStore shared].lastError; color = UIColor.systemRedColor; }
+    [UIView performWithoutAnimation:^{
+        [self->_statusPill setTitle:text forState:UIControlStateNormal];
+        self->_statusPill.tintColor = color;
+        [self->_statusPill layoutIfNeeded];
+    }];
+}
 - (void)reloadAll {
     _power.on = [[self.store valueAt:@"enabled"] boolValue];
     _preamp.value = [[self.store valueAt:@"preamp"] floatValue];
@@ -856,7 +1152,15 @@ static const double kGraphDB = 18;
         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
         [weakSelf presentViewController:alert animated:YES completion:nil];
     }];
-    return [UIMenu menuWithTitle:@"" children:@[flat, reset, help]];
+    UIAction *restart = [UIAction actionWithTitle:@"Restart audio daemon" image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"] identifier:nil handler:^(UIAction *a) {
+        [[TBStore shared] commit];
+        NSString *msg = restartAudio();
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Audio" message:msg preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [weakSelf presentViewController:alert animated:YES completion:nil];
+    }];
+    restart.attributes = UIMenuElementAttributesDestructive;
+    return [UIMenu menuWithTitle:@"" children:@[flat, reset, help, restart]];
 }
 @end
 

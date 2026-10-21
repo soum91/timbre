@@ -12,7 +12,14 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 
 APPLICATION_NAME = TimbreControl
 TimbreControl_FILES = TimbreControl/main.m
-TimbreControl_RESOURCE_FILES = TimbreControl/Info.plist
+TimbreControl_RESOURCE_FILES = TimbreControl/Info.plist $(wildcard TimbreControl/Icons/*.png)
+TimbreControl_CODESIGN_FLAGS = -STimbreControl/entitlements.plist
 TimbreControl_FRAMEWORKS = UIKit Foundation
 TimbreControl_CFLAGS = -fobjc-arc
 include $(THEOS_MAKE_PATH)/application.mk
+
+TOOL_NAME = timbrectl
+timbrectl_FILES = timbrectl/main.c
+timbrectl_INSTALL_PATH = /usr/libexec
+timbrectl_CODESIGN_FLAGS = -Stimbrectl/entitlements.plist
+include $(THEOS_MAKE_PATH)/tool.mk
