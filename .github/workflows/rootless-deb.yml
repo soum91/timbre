@@ -53,7 +53,7 @@ jobs:
           set -o pipefail
           make -C Tweak clean package \
             FINALPACKAGE=1 \
-            ARCHS=arm64 2>&1 | tee build.log
+            ARCHS="arm64 arm64e" 2>&1 | tee build.log
 
           ls -lh Tweak/packages/*.deb
 

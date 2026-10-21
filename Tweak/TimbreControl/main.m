@@ -699,10 +699,12 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *_previous;  // calls, nested, frames
     NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *_rates;
     NSString *_message;
+    NSString *_inspect;
 }
 - (instancetype)init {
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
         self.title = @"Status";
+        _inspect = @"Running…";
         _previous = [NSMutableDictionary new];
         _rates = [NSMutableDictionary new];
     }
@@ -714,9 +716,25 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
 }
 - (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)runInspect {
+    _inspect = @"Running…";
+    [self.tableView reloadData];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *out = nil;
+        const int rc = runHelper(@"inspect", &out);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TBStatusController *me = weakSelf;
+            if (!me) return;
+            me->_inspect = out.length ? [out stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : [NSString stringWithFormat:@"timbrectl returned %d with no output", rc];
+            [me.tableView reloadData];
+        });
+    });
+}
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self tick];
+    [self runInspect];
     _timer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tick) userInfo:nil repeats:YES];
 }
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [_timer invalidate]; _timer = nil; }
@@ -734,13 +752,18 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     }
     [self.tableView reloadData];
 }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return (NSInteger)audioDaemons().count + 2; }
+// Section layout: one per daemon, then deep check, settings file, actions.
+- (NSInteger)deepSection { return (NSInteger)audioDaemons().count; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return (NSInteger)audioDaemons().count + 3; }
 - (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s {
     if (s < (NSInteger)audioDaemons().count) return audioDaemons()[(NSUInteger)s];
-    return s == (NSInteger)audioDaemons().count ? @"Settings file" : @"Actions";
+    if (s == self.deepSection) return @"Deep check (root)";
+    return s == self.deepSection + 1 ? @"Settings file" : @"Actions";
 }
 - (NSString *)tableView:(UITableView *)t titleForFooterInSection:(NSInteger)s {
-    if (s == (NSInteger)audioDaemons().count + 1)
+    if (s == self.deepSection)
+        return @"Reads the daemons' memory maps as root, so it works even if the sandbox blocks the live status above. Tap to run again.";
+    if (s == self.deepSection + 2)
         return _message ?: @"If a daemon shows Not loaded, restart audio. If it still is not loaded, ElleKit is not injecting into it. Turn off EQE's AudioUnitRender hook while testing Timbre so the audio is not processed twice.";
     if (s == 0) return @"Calls are outermost AudioUnitRender calls per second; nested are mixer inputs Timbre leaves alone.";
     return nil;
@@ -766,7 +789,8 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
     const NSInteger n = (NSInteger)audioDaemons().count;
     if (s < n) return (NSInteger)[self rowsForDaemon:audioDaemons()[(NSUInteger)s]].count;
-    return s == n ? 2 : 3;
+    if (s == self.deepSection) return 1;
+    return s == n + 1 ? 2 : 3;
 }
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"s"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"s"];
@@ -774,10 +798,19 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     cfg.secondaryTextProperties.numberOfLines = 0;
     const NSInteger n = (NSInteger)audioDaemons().count;
     c.selectionStyle = UITableViewCellSelectionStyleNone;
+    if (ip.section == self.deepSection) {
+        UIListContentConfiguration *cell = [UIListContentConfiguration cellConfiguration];
+        cell.text = _inspect;
+        cell.textProperties.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+        cell.textProperties.numberOfLines = 0;
+        c.contentConfiguration = cell;
+        c.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return c;
+    }
     if (ip.section < n) {
         NSArray *row = [self rowsForDaemon:audioDaemons()[(NSUInteger)ip.section]][(NSUInteger)ip.row];
         cfg.text = row[0]; cfg.secondaryText = row[1];
-    } else if (ip.section == n) {
+    } else if (ip.section == n + 1) {
         NSString *path = ip.row == 0 ? kConfigPath : kLegacyConfigPath;
         NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
         cfg.text = ip.row == 0 ? @"Jailbreak root" : @"Legacy";
@@ -793,11 +826,14 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
 }
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [t deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section != (NSInteger)audioDaemons().count + 1) return;
+    if (ip.section == self.deepSection) { [self runInspect]; return; }
+    if (ip.section != self.deepSection + 2) return;
     if (ip.row == 0) {
         [[TBStore shared] commit];
         _message = restartAudio();
         [_previous removeAllObjects]; [_rates removeAllObjects];
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [weakSelf runInspect]; });
     } else if (ip.row == 1) {
         [[TBStore shared] commit];
         _message = [TBStore shared].lastError ?: @"Saved and sent reload notification.";

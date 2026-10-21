@@ -343,6 +343,23 @@ static void startDiagnostics() {
         publish(process, "format", statFormat.load(std::memory_order_relaxed));
         publish(process, "rate", statRate.load(std::memory_order_relaxed));
         publish(process, "heartbeat", (uint64_t)time(nullptr));
+        // Second channel in case the daemon's sandbox blocks notify state: plain text files the root helper reads.
+        char text[512];
+        const uint64_t fmt = statFormat.load(std::memory_order_relaxed);
+        snprintf(text, sizeof(text), "time=%ld pid=%d hook=%d source=%u enabled=%d bands=%lu fx=%d calls=%llu nested=%llu frames=%llu "
+                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu\n",
+                 (long)time(nullptr), getpid(), hookedRenderOK ? 1 : 0, configSource.load(std::memory_order_relaxed),
+                 c && c->enabled ? 1 : 0, c ? (unsigned long)c->count : 0ul, c && c->fxActive ? 1 : 0,
+                 (unsigned long long)statCalls.load(std::memory_order_relaxed), (unsigned long long)statNested.load(std::memory_order_relaxed),
+                 (unsigned long long)statFrames.load(std::memory_order_relaxed), (unsigned long long)(fmt & 0xffffffff),
+                 (unsigned long long)((fmt >> 32) & 0xff), (unsigned long long)((fmt >> 40) & 0xff), (unsigned long long)((fmt >> 48) & 0xff),
+                 (unsigned long long)(fmt >> 56), (unsigned long long)(uint32_t)statRate.load(std::memory_order_relaxed));
+        static const char *dirs[] = {"/var/jb/var/mobile/Library/Preferences", "/var/tmp", "/tmp"};
+        for (const char *dir : dirs) {
+            char path[256];
+            snprintf(path, sizeof(path), "%s/com.soum91.timbreaudio.status.%s.txt", dir, process);
+            if (FILE *f = fopen(path, "w")) { fputs(text, f); fclose(f); }
+        }
     });
     dispatch_resume(t);
     static dispatch_source_t retained;
@@ -350,6 +367,7 @@ static void startDiagnostics() {
     (void)retained;
 }
 __attribute__((constructor)) void initializeTimbre() {
+    os_log(OS_LOG_DEFAULT, "Timbre: injected into %{public}s pid %d", getprogname(), getpid());
     mach_timebase_info_data_t timebase{};
     mach_timebase_info(&timebase);
     staleTicks = timebase.numer ? (uint64_t)(2e9 * timebase.denom / timebase.numer) : 2000000000ull;
