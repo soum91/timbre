@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <vector>
 int main() {
  using namespace timbre;
  StereoEQ eq(48000);
@@ -18,5 +19,32 @@ int main() {
  assert(std::isfinite(impulse[510]));
  for(int i=1;i<512;i+=2)assert(impulse[i]==0);
  for(int i=0;i<8;i++) {Band b{true,static_cast<FilterType>(i),1000,3,0.7};auto c=coefficients(b,48000);assert(std::isfinite(c.b0)&&std::isfinite(c.a2));}
+ {
+  // Effects: everything off is bit-exact passthrough.
+  Effects fx; EffectsParams p; p.limiter.on=false;
+  assert(fx.prepare(48000)); fx.configure(p);
+  float a[8]={0.1f,-0.2f,0.3f,-0.4f,0.5f,0.6f,-0.7f,0.8f},b[8];
+  for(int i=0;i<8;i++)b[i]=a[i];
+  fx.process(b,4); for(int i=0;i<8;i++)assert(b[i]==a[i]);
+  assert(!fx.prepare(192000)&&!fx.ready()&&fx.prepare(44100));
+  // Mono collapses channels.
+  p.width.on=true;p.width.mono=true;fx.configure(p);
+  float m[4]={1.f,0.f,0.2f,0.6f};fx.process(m,2);assert(m[0]==m[1]&&m[2]==m[3]);
+  // Swap.
+  p.width.mono=false;p.width.swap=true;fx.configure(p);
+  float w[2]={0.25f,-0.5f};fx.process(w,1);assert(std::abs(w[0]+0.5f)<1e-6f&&std::abs(w[1]-0.25f)<1e-6f);
+  // Limiter holds the ceiling.
+  p=EffectsParams{};p.outputDB=12;p.limiter.ceiling=-3;fx.configure(p);
+  std::vector<float> loud(9600);for(size_t i=0;i<loud.size();i++)loud[i]=std::sin(i*0.05f);
+  fx.process(loud.data(),loud.size()/2);const float ceil=std::pow(10.f,-3.f/20.f);
+  for(float v:loud)assert(std::isfinite(v)&&std::abs(v)<=ceil+1e-6f);
+  // Reverb leaves a finite tail after an impulse; spatial, crossfeed and compressor stay finite.
+  p=EffectsParams{};p.reverb.on=true;p.reverb.mix=0.5;p.spatial.on=true;p.crossfeed.on=true;p.comp.on=true;
+  fx.configure(p);fx.reset();
+  std::vector<float> imp(48000*2,0.f);imp[0]=1;imp[1]=1;fx.process(imp.data(),48000);
+  double tail=0;for(size_t i=20000;i<imp.size();i++){assert(std::isfinite(imp[i]));tail+=std::abs(imp[i]);}
+  assert(tail>1e-4);
+  assert(effectsActive(p)&&!effectsActive([]{EffectsParams q;q.limiter.on=false;return q;}()));
+ }
  std::cout<<"PASS: native DSP tests\n";
 }

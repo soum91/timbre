@@ -1,15 +1,32 @@
-# Timbre Audio, Stage 2 (experimental)
+# Timbre Audio 0.5.0 (experimental)
 
-Target: Dopamine rootless, iOS 16.1.1. Build on a configured Theos installation:
+Target: Dopamine rootless, iOS 16.x. CI builds the DEB on every push to `timbre-rootless`.
+Local build on a configured Theos installation:
 
     cd Tweak
     make clean package THEOS_PACKAGE_SCHEME=rootless
 
-This is NOT a working system-wide EQ yet. The hook is installed but DSP is deliberately
-**disabled**. It has not been tested on iOS, and AudioUnitRender may not cover the
-output route used by mediaserverd. Do not install on a daily-use device without
-recovery access. The actual hook point must be validated against the target OS.
+## What's in it
 
-Remaining: safe per-stream DSP state and lifecycle, validated sample formats,
-configuration IPC, DSP initialization off audio thread, control app integration,
-rootless device testing, and verified package build.
+**Tweak (mediaserverd / audiomxd).** Hooks `AudioUnitRender` and processes interleaved stereo
+Float32 output: up to 16 parametric bands (peak, shelves, pass filters, notch, all-pass), then
+compressor, crossfeed, spatial virtual speakers, stereo width/balance/mono/swap, reverb,
+output gain and a peak limiter. Effect memory is allocated off the audio thread in a small
+pool owned per AudioUnit. Settings reload instantly via the `com.soum91.timbreaudio.reload`
+Darwin notification, with a once-per-second plist poll as fallback.
+
+**Timbre app.** EQE-style controller:
+- EQ: one gain / frequency / Q fader triplet per band, add up to 16 bands, per-band menu
+  for filter type, bypass and delete. Tap any value to type it. Double-tap a fader to reset.
+  Slide sideways off a fader for fine control.
+- Response graph: exact biquad response; drag a dot for frequency and gain, pinch for Q.
+- Spatial, Reverb and Dynamics tabs with presets, mirroring the main Timbre app.
+- Presets: built-ins, saved presets (EQ + effects), Equalizer APO / AutoEq import from the
+  clipboard and export to the clipboard.
+
+## Caution
+
+Still not device-validated. AudioUnitRender may not cover every playback route, and only
+interleaved stereo Float32 is processed (effects need 96 kHz or lower). Spatial is an
+interaural delay / head-shadow approximation, not a measured HRTF. If audio services fail,
+remove the tweak from jailbreak safe mode.
