@@ -1,0 +1,48 @@
+
+name: Extract Timbre Rootless
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: rootless-timbre
+
+      - name: Extract uploaded ZIP
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          archive = Path("timbre-rootless-github-upload.zip")
+          if not archive.is_file():
+              raise SystemExit("ZIP file not found")
+
+          with zipfile.ZipFile(archive) as z:
+              for item in z.infolist():
+                  path = Path(item.filename)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"Unsafe ZIP path: {item.filename}")
+              z.extractall(".")
+          PY
+
+          echo "Extracted files:"
+          ls -la
+
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Extract rootless tweak source"
+            git push origin HEAD:rootless-timbre
+          fi
