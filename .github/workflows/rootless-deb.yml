@@ -1,59 +1,47 @@
-
-name: Build Rootless DEB
-
+name: Build Rootless DEB and Publish Sileo Repo
 on:
   push:
     branches: [timbre-rootless]
     paths:
       - "Tweak/**"
       - "NativeDSP/**"
+      - "scripts/generate-repo.sh"
       - ".github/workflows/rootless-deb.yml"
   workflow_dispatch:
-
 permissions:
-  contents: read
-
+  contents: write
 jobs:
   build:
     runs-on: macos-15
-
     env:
       THEOS: ${{ github.workspace }}/theos
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install signing and packaging tools
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
         run: |
           brew install ldid dpkg
           command -v ldid
-          command -v dpkg-deb
-
-      - name: Install Theos and iOS SDKs
+          command -v dpkg-scanpackages
+      - name: Install Theos and SDK
         run: |
-          git clone --depth 1 --recursive \
-            https://github.com/theos/theos.git "$THEOS"
-
-          git clone --depth 1 \
-            https://github.com/theos/sdks.git /tmp/theos-sdks
-
+          git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
           cp -R /tmp/theos-sdks/*.sdk "$THEOS/sdks/"
-
-      - name: Build experimental rootless DEB
+      - name: Build tweak and controller app
         run: |
-          sed -i '' 's/-fno-exceptions/-fexceptions/' Tweak/Makefile
-
-          make -C Tweak clean package \
-            FINALPACKAGE=1 \
-            ARCHS=arm64
-
+          make -C Tweak clean package FINALPACKAGE=1 ARCHS=arm64
           ls -lh Tweak/packages/*.deb
-
-      - name: Upload DEB artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: timbre-rootless-deb
+          name: timbre-rootless-with-app
           path: Tweak/packages/*.deb
           if-no-files-found: error
-          retention-days: 30
+      - name: Generate APT repository
+        run: bash scripts/generate-repo.sh
+      - name: Publish gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          publish_branch: gh-pages
+          force_orphan: true
