@@ -1,6 +1,6 @@
 Package: com.soum91.timbreaudio
 Name: Timbre Audio (Experimental)
-Version: 0.7.0
+Version: 0.7.1
 Architecture: iphoneos-arm64
 Description: Experimental system EQ (16 parametric bands) with spatial, reverb, crossfeed, compressor and limiter; EQE-style Timbre controller. Device route not verified
 Maintainer: soum91

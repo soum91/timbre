@@ -993,10 +993,11 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     [_scroller setContentHuggingPriority:1 forAxis:UILayoutConstraintAxisVertical];
     [_scroller setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisVertical];
     [_scroller.heightAnchor constraintGreaterThanOrEqualToConstant:230].active = YES;
+    [self.view addSubview:root];
+    // Cross-hierarchy constraint: only valid once root (and the graph) are inside self.view.
     NSLayoutConstraint *graphHeight = [_graph.heightAnchor constraintEqualToAnchor:self.view.heightAnchor multiplier:.24];
     graphHeight.priority = UILayoutPriorityDefaultHigh;
     graphHeight.active = YES;
-    [self.view addSubview:root];
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [root.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
