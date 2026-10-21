@@ -1,0 +1,23 @@
+
+name: Native DSP Tests
+
+on:
+  push:
+    branches: [timbre-rootless]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile DSP tests
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra \
+            NativeDSP/TimbreDSP.cpp \
+            NativeDSP/tests/test.cpp \
+            -o /tmp/timbre-dsp-test
+
+      - name: Run DSP tests
+        run: /tmp/timbre-dsp-test
