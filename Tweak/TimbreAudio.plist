@@ -1,1 +1,1 @@
-{ Filter = { Executables = ( "mediaserverd" ); }; }
+{ Filter = { Executables = ( "mediaserverd", "audiomxd" ); }; }
