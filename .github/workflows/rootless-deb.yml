@@ -16,28 +16,44 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
+
     env:
       THEOS: ${{ github.workspace }}/theos
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install Theos and SDKs
+      - name: Install signing and packaging tools
+        run: |
+          brew install ldid dpkg
+          command -v ldid
+          command -v dpkg-deb
+
+      - name: Install Theos and iOS SDKs
         run: |
           git clone --depth 1 --recursive \
             https://github.com/theos/theos.git "$THEOS"
+
           git clone --depth 1 \
             https://github.com/theos/sdks.git /tmp/theos-sdks
+
           cp -R /tmp/theos-sdks/*.sdk "$THEOS/sdks/"
 
       - name: Build experimental rootless DEB
         run: |
           sed -i '' 's/-fno-exceptions/-fexceptions/' Tweak/Makefile
-          make -C Tweak clean package FINALPACKAGE=1 ARCHS=arm64
 
-      - name: Upload DEB
+          make -C Tweak clean package \
+            FINALPACKAGE=1 \
+            ARCHS=arm64
+
+          ls -lh Tweak/packages/*.deb
+
+      - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
         with:
           name: timbre-rootless-deb
           path: Tweak/packages/*.deb
           if-no-files-found: error
+          retention-days: 30
