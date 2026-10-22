@@ -812,4 +812,129 @@
 
   try { Object.defineProperty(window, '__timbre', { value: api, enumerable: false }); } catch (e) { window.__timbre = api; }
   if (window === window.top) status(state, compat ? 'compat' : '');
+
+  // Opt-in Amazon Music Web Audio test. No key extraction or DRM changes.
+  if (window === window.top &&
+      /^music\.amazon\.(ca|com)$/.test(location.hostname)) {
+    var probeOutcome = '';
+    var probeContext = null;
+    var previousDiagnose = api.diagnose;
+
+    api.diagnose = function () {
+      if (probeOutcome) status(state, 'Audio probe: ' + probeOutcome);
+      previousDiagnose();
+    };
+
+    function probeReport(message) {
+      probeOutcome = String(message).slice(0, 120);
+      api.diagnose();
+    }
+
+    function runAudioProbe() {
+      var elements = Array.from(document.querySelectorAll('audio,video'));
+      var media = elements.find(function (el) {
+        return !el.paused && !el.ended && el.readyState >= 2;
+      });
+
+      if (!media) {
+        probeReport('No playing media found. Start a song first.');
+        return false;
+      }
+
+      if (attached.has(media)) {
+        probeReport('Already attached. Reload page before testing.');
+        return false;
+      }
+
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) {
+        probeReport('AudioContext unavailable.');
+        return false;
+      }
+
+      var analyser, timer, finished = false;
+      var maxPeak = 0, checks = 0;
+      var initialTime = media.currentTime;
+
+      function finish(message) {
+        if (finished) return;
+        finished = true;
+        if (timer) clearInterval(timer);
+        probeReport(message + ' Reload page to restore playback.');
+      }
+
+      try {
+        probeContext = new AC();
+        var resume = probeContext.resume();
+
+        var source = probeContext.createMediaElementSource(media);
+        analyser = probeContext.createAnalyser();
+        analyser.fftSize = 2048;
+
+        source.connect(analyser);
+        analyser.connect(probeContext.destination);
+
+        if (resume && resume.catch) {
+          resume.catch(function (e) {
+            finish('AudioContext resume rejected: ' + (e.name || 'unknown'));
+          });
+        }
+      } catch (e) {
+        finish('Connection rejected: ' + (e.name || 'unknown'));
+        return true;
+      }
+
+      var samples = new Float32Array(analyser.fftSize);
+      timer = setInterval(function () {
+        if (finished) return;
+        checks++;
+
+        if (probeContext.state === 'running') {
+          analyser.getFloatTimeDomainData(samples);
+          for (var i = 0; i < samples.length; i++) {
+            maxPeak = Math.max(maxPeak, Math.abs(samples[i]));
+          }
+        }
+
+        if (checks >= 40) {
+          var advancing = media.currentTime > initialTime + 0.5;
+          if (probeContext.state !== 'running') {
+            finish('AudioContext suspended; inconclusive.');
+          } else if (maxPeak > 0.00001) {
+            finish('NONZERO AUDIO SAMPLES. Peak=' + maxPeak.toFixed(5));
+          } else if (advancing) {
+            finish('SILENCE while track advances. Audio inaccessible.');
+          } else {
+            finish('Playback not advancing; inconclusive.');
+          }
+        }
+      }, 100);
+
+      return true;
+    }
+
+    function addProbeButton() {
+      if (!document.body) return;
+      var button = document.createElement('button');
+      button.textContent = 'Timbre: Test Audio Access';
+      button.style.cssText =
+        'position:fixed!important;bottom:90px!important;' +
+        'right:12px!important;z-index:2147483647!important;' +
+        'background:#a3203a!important;color:white!important;' +
+        'border:2px solid white!important;border-radius:12px!important;' +
+        'padding:12px!important;font:600 13px -apple-system,sans-serif!important;';
+      button.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (runAudioProbe()) button.remove();
+      }, true);
+      document.body.appendChild(button);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', addProbeButton, { once: true });
+    } else {
+      addProbeButton();
+    }
+  }
 })();
