@@ -32,11 +32,22 @@ determines which players and routes can be processed.
 
 1. Download the debug APK from the **Android TV APK (experimental)** GitHub
    Actions build for this branch and sideload it onto the Sony A80L.
-   GitHub Actions may use a different debug signing certificate for each run.
-   If installing over an older debug build reports
-   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, run
-   `adb uninstall com.soum91.timbretv` before the new install. This erases
-   the prototype's locally saved EQ curve and preset.
+   Starting with v0.5, GitHub Actions reuses its Android debug signing
+   identity between builds through an Actions cache. Previous builds were
+   signed with ephemeral keys, so **one final uninstall is required** to
+   transition to v0.5 if Android reports `INSTALL_FAILED_UPDATE_INCOMPATIBLE`:
+
+   ```shell
+   adb uninstall com.soum91.timbretv
+   ```
+
+   This clears the locally saved EQ curve and preset. Once v0.5 is installed,
+   later APKs signed with the cached key should install over it using
+   `adb install -r app-debug.apk` or a compatible TV APK installer.
+   **Limitation:** GitHub Actions caches can expire or be removed; this is
+   safer than committing a private signing key to a public repository but
+   is not permanent release signing. A private, backed-up signing key in
+   GitHub Actions secrets is recommended for long-term updates.
 2. For **per-player mode only**, grant diagnostics permission over ADB
    (one command, not a multi-line block):
 

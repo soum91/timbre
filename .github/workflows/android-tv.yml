@@ -26,9 +26,21 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      # Gradle otherwise makes a new debug certificate on every ephemeral runner,
+      # preventing Android from installing the next APK over the previous one.
+      # This cache reuses the key across builds on android-tv-prototype.
+      - name: Restore Android TV debug signing identity
+        id: signing-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: timbre-tv-android-debug-signing-v1
       - name: Build Android TV debug APK
         working-directory: android-tv
         run: gradle --no-daemon :app:assembleDebug
+      - name: Report APK signing certificate fingerprint
+        run: |
+          keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | grep -F 'SHA256:'
       - uses: actions/upload-artifact@v4
         with:
           name: Timbre-TV-experimental-debug
