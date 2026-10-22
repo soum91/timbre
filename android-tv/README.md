@@ -1,7 +1,8 @@
 # Timbre TV (Android 12 prototype)
 
-An experimental Android TV controller for the system's available audio session
-equalizer. This is a new Android implementation, not a binary port of the iOS
+An experimental Android TV controller for the system's available audio
+equalizer, with per-player sessions and an opt-in global output-mix mode.
+This is a new Android implementation, not a binary port of the iOS
 `AudioUnitRender` hook.
 
 The original `NativeDSP/TimbreDSP.cpp` now also builds into the APK through
@@ -18,6 +19,10 @@ Equalizer was independently demonstrated to adjust YouTube and Netflix audio
 using player tracking after an ADB-granted `DUMP` permission.
 
 The Android public `Equalizer` API attaches an EQ to a **playback session**.
+Android also retains a **deprecated session-0 global mix** insertion path,
+which Poweramp exposes as an experimental option. Timbre TV can now test
+that route independently of session discovery, but a successfully created
+effect is not proof that it processes a specific app or HDMI audio route.
 It cannot insert arbitrary Timbre native C++ biquads into the protected TV
 audio mixer or re-encode Dolby Digital Plus. No root is required for the
 supported session-based effect API, but Sony/Android firmware behavior still
@@ -32,7 +37,8 @@ determines which players and routes can be processed.
    `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, run
    `adb uninstall com.soum91.timbretv` before the new install. This erases
    the prototype's locally saved EQ curve and preset.
-2. Grant diagnostics permission over ADB (one command, not a multi-line block):
+2. For **per-player mode only**, grant diagnostics permission over ADB
+   (one command, not a multi-line block):
 
    ```shell
    adb shell pm grant com.soum91.timbretv android.permission.DUMP
@@ -40,12 +46,16 @@ determines which players and routes can be processed.
 
 3. Disable Poweramp Equalizer during the test so it does not compete for the
    same Android effect engine.
-4. Open **Timbre TV (Experimental)** from the Google TV apps screen and press
+4. Open **Timbre TV (Experimental)** from the Google TV apps screen. In the
+   **EQ** tab, leave **Global mix: OFF** for player tracking, or switch
+   **Global mix: ON** to try session 0 without a `DUMP` grant. Press
    **Start EQ**. A foreground notification keeps the session monitor
    active; press **Stop Timbre TV** when finished.
-5. Start a YouTube or Netflix session and check the status count. Adjust a
-   band by an obvious amount. If the app cannot attach to the session, the
-   reason appears in status. If the session never appears, `dumpsys` may not
+5. Start YouTube or Netflix and check the playback status. In global mode,
+   confirm that it reports effect control and `enabled: true`; this alone
+   does not prove that playback is being equalized. In per-player mode,
+   confirm that a session was detected. Adjust a band by an obvious amount
+   and listen for a change. If the session never appears, `dumpsys` may not
    be callable by the app on this firmware.
 6. Independently verify the **actual incoming audio format on the Vizio
    Elevate P514a-H6** during the test. EQ audibility alone cannot prove that
@@ -56,6 +66,8 @@ determines which players and routes can be processed.
 - Native Google TV home launcher icon and 320x180 banner.
 - Dark/amber remote-first tabs styled after the original Timbre tweak.
 - EQ curve visualization reflecting five genuinely editable system EQ bands.
+- One-button switch between individually tracked player sessions and the
+  experimental Android global output mix. Modes are mutually exclusive.
 - Working Flat, Bass Boost, V-Shape, Vocal Presence, Treble Boost and
   Late Night Loudness tonal presets, plus one locally saved My curve.
 - Separate Spatial, Reverb and Dynamics pages document unavailable processing.
@@ -71,7 +83,8 @@ and spatial effects. Its filter type order is defined by `FilterType` in
 `NativeDSP/TimbreDSP.hpp`.
 
 For now, TV-wide playback processing still uses Android's fixed-band
-`Equalizer` audio-session effect. The platform does not provide a supported
+`Equalizer` effect, either on a tracked playback session or (experimentally)
+on the deprecated global session 0. The platform does not provide a supported
 rootless hook that passes Netflix or YouTube PCM into the native engine,
 and the native bridge does not decode or encode Dolby Digital Plus or Atmos.
 
@@ -87,6 +100,9 @@ and the native bridge does not decode or encode Dolby Digital Plus or Atmos.
 - Session discovery uses a Sony Android 12 `dumpsys media.audio_policy` format
   observed from the actual TV and broadcasts from cooperative players. Some
   firmware may reject `dumpsys` even after granting `DUMP`.
+- Session-0 global effects are deprecated, can fail or be ignored by the TV's
+  audio firmware, and may stop working after updates. Global EQ does not
+  require the `DUMP` permission but also does not guarantee Dolby processing.
 - When other EQ apps control a session, effects may conflict or fail to attach.
 - This is an experimental debug build, not a production-quality background
   service or validated Dolby-certified signal processor.

@@ -191,7 +191,36 @@ public final class MainActivity extends Activity {
         page.addView(top);
         top.addView(text("Equalizer", 26, TEXT, true),
                 new LinearLayout.LayoutParams(0, -2, 1f));
-        top.addView(text("FIVE-BAND SESSION EQ", 12, GOLD, true));
+        top.addView(text("ANDROID PLATFORM EQ", 12, GOLD, true));
+
+        LinearLayout routing = card();
+        LinearLayout.LayoutParams routingParams = new LinearLayout.LayoutParams(-1, -2);
+        routingParams.topMargin = dp(12);
+        page.addView(routing, routingParams);
+        LinearLayout routingRow = row();
+        routingRow.setGravity(Gravity.CENTER_VERTICAL);
+        routing.addView(routingRow);
+        LinearLayout routingText = column();
+        routingRow.addView(routingText, new LinearLayout.LayoutParams(0, -2, 1f));
+        routingText.addView(text("AUDIO ROUTING", 13, GOLD, true));
+        routingText.addView(text("Experimental global output mix (session 0)", 17, TEXT, true));
+        boolean global = EqSettings.preferences(this).getBoolean(EqSettings.GLOBAL_MIX, false);
+        Button routeMode = button(global ? "GLOBAL MIX: ON" : "GLOBAL MIX: OFF");
+        routingRow.addView(routeMode, new LinearLayout.LayoutParams(dp(240), dp(49)));
+        routeMode.setOnClickListener(v -> {
+            boolean next = !EqSettings.preferences(this)
+                    .getBoolean(EqSettings.GLOBAL_MIX, false);
+            EqSettings.preferences(this).edit().putBoolean(EqSettings.GLOBAL_MIX, next).apply();
+            routeMode.setText(next ? "GLOBAL MIX: ON" : "GLOBAL MIX: OFF");
+            applyToService();
+        });
+        TextView routingNote = text("OFF: track individual app sessions (requires ADB DUMP grant).  "
+                + "ON: use Android's deprecated global output EQ without session tracking. "
+                + "Turn off Poweramp EQ during testing. Dolby passthrough can bypass this effect; "
+                + "an attached engine does not prove audible processing.", 13, MUTED, false);
+        LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(-1, -2);
+        noteParams.topMargin = dp(8);
+        routing.addView(routingNote, noteParams);
 
         LinearLayout body = row();
         LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(-1, -2);
@@ -204,7 +233,7 @@ public final class MainActivity extends Activity {
         graphParams.rightMargin = dp(14);
         body.addView(graphCard, graphParams);
         graphCard.addView(text("RESPONSE CURVE", 13, GOLD, true));
-        graphCard.addView(text("Interpolated gain at the TV's fixed EQ bands",
+        graphCard.addView(text("Interpolated gain at Android's fixed EQ bands",
                 13, MUTED, false));
         curve = new CurveView();
         curve.setGains(EqSettings.readGains(this));

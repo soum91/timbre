@@ -8,6 +8,8 @@ final class EqSettings {
     private static final String PREFS = "timbre_tv";
     static final String STATUS = "status";
     static final String ENABLED = "enabled";
+    // Android's deprecated global output-mix session (0). Opt-in only.
+    static final String GLOBAL_MIX = "global_mix";
 
     private EqSettings() {}
 
