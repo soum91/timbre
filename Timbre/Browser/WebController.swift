@@ -256,6 +256,8 @@ final class WebController: NSObject, ObservableObject {
         Assessment: \(reason)
         DRM: \(drm)
         Encrypted/key events: \(int("encryptedEvents"))/\(int("needKeyEvents"))
+        DRM initialization types: \(str("drmInitTypes"))
+        DRM key system: \(str("drmKeySystems"))
         Media with keys: \(int("keyedElements"))
         Possible CORS issues: \(int("corsCandidates"))
         CORS retries/failures: \(int("corsRetries"))/\(int("corsFailures"))
