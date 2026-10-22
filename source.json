@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.20",
+          "buildVersion": "20",
+          "date": "2026-10-22T17:35:59Z",
+          "localizedDescription": "Experimental Amazon Music diagnostics: DRM initialization type and key-system identification, improved ReplayKit audio measurement, and native reference-tone test. DRM playback EQ is not yet supported.",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/amazon-web-audio-test-20/Timbre-1.0-build-20.ipa",
+          "size": 907894,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.15",
           "buildVersion": "15",
           "date": "2026-10-22T03:57:03Z",
@@ -110,11 +119,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.15",
-      "versionDate": "2026-10-22T03:57:03Z",
-      "versionDescription": "- Add opt-in Amazon Music Web Audio access test button (3373e41)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-15/Timbre-1.0-build-15.ipa",
-      "size": 885159,
+      "version": "1.0.20",
+      "versionDate": "2026-10-22T17:35:59Z",
+      "versionDescription": "Experimental Amazon Music diagnostics: DRM initialization type and key-system identification, improved ReplayKit audio measurement, and native reference-tone test. DRM playback EQ is not yet supported.",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/amazon-web-audio-test-20/Timbre-1.0-build-20.ipa",
+      "size": 907894,
       "appPermissions": {}
     }
   ],
