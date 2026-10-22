@@ -865,7 +865,6 @@
 
       try {
         probeContext = new AC();
-        var resume = probeContext.resume();
 
         var source = probeContext.createMediaElementSource(media);
         analyser = probeContext.createAnalyser();
@@ -874,6 +873,16 @@
         source.connect(analyser);
         analyser.connect(probeContext.destination);
 
+        // Provide an inaudible source so WebKit has an active render graph.
+        // Start and resume synchronously from the user's button tap.
+        var oscillator = probeContext.createOscillator();
+        var mute = probeContext.createGain();
+        mute.gain.value = 0;
+        oscillator.connect(mute);
+        mute.connect(probeContext.destination);
+        oscillator.start();
+
+        var resume = probeContext.resume();
         if (resume && resume.catch) {
           resume.catch(function (e) {
             finish('AudioContext resume rejected: ' + (e.name || 'unknown'));
@@ -899,7 +908,7 @@
         if (checks >= 40) {
           var advancing = media.currentTime > initialTime + 0.5;
           if (probeContext.state !== 'running') {
-            finish('AudioContext suspended; inconclusive.');
+            finish('AudioContext ' + probeContext.state + '; inconclusive.');
           } else if (maxPeak > 0.00001) {
             finish('NONZERO AUDIO SAMPLES. Peak=' + maxPeak.toFixed(5));
           } else if (advancing) {
