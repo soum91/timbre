@@ -79,6 +79,30 @@
   // Intentionally no media URLs, account data, audio samples or DRM key data.
   var diagID = Math.random().toString(36).slice(2, 10);
   var diagEncryptedEvents = 0, diagNeedKeyEvents = 0, diagMediaErrors = 0;
+  var diagInitTypes = new Set();
+
+  // Collect identifiers only. Never inspect or transmit initData, licenses, keys or URLs.
+  function recordInitType(event) {
+    var kind = String(event && event.initDataType || '').toLowerCase();
+    if (['skd', 'sinf', 'cenc', 'keyids', 'mpts', 'webm'].indexOf(kind) >= 0) {
+      diagInitTypes.add(kind);
+    } else {
+      diagInitTypes.add('unknown');
+    }
+  }
+
+  function diagnosticKeySystem(element) {
+    try {
+      var keySystem = element.webkitKeys && element.webkitKeys.keySystem;
+      if (!keySystem && element.mediaKeys) keySystem = element.mediaKeys.keySystem;
+      if (!keySystem) return '';
+      var name = String(keySystem).toLowerCase();
+      if (name.indexOf('com.apple.fps') === 0) return 'FairPlay (' + name.slice(0, 48) + ')';
+      if (name === 'com.widevine.alpha') return 'Widevine';
+      if (name === 'org.w3.clearkey') return 'Clear Key';
+      return 'other / unrecognized';
+    } catch (e) { return 'not exposed'; }
+  }
   var diagAttachAttempts = 0, diagAttachFailures = 0;
   var diagCorsRetries = 0, diagCorsFailures = 0;
   var diagLastAttachError = '', diagLastDetail = '';
@@ -102,12 +126,15 @@
       });
     } catch (e) {}
     var kinds = [], playing = 0, keys = 0, corsCandidates = 0, errors = [];
+    var keySystems = [];
     els.slice(0, 32).forEach(function (el) {
       try {
         var kind = diagnosticSourceKind(el);
         if (kinds.indexOf(kind) < 0) kinds.push(kind);
         if (!el.paused && !el.ended) playing++;
         if (isEncrypted(el)) keys++;
+        var keySystem = diagnosticKeySystem(el);
+        if (keySystem && keySystems.indexOf(keySystem) < 0) keySystems.push(keySystem);
         if (corsBlocked(el)) corsCandidates++;
         if (el.error && el.error.code && errors.indexOf(el.error.code) < 0) errors.push(el.error.code);
       } catch (e) {}
@@ -117,6 +144,8 @@
       mediaCount: els.length, playing: playing, attached: attached.size,
       kinds: kinds.slice(0, 8).join(', ') || 'none observed',
       encryptedEvents: diagEncryptedEvents, needKeyEvents: diagNeedKeyEvents,
+      drmInitTypes: Array.from(diagInitTypes).slice(0, 6).join(', ') || 'not observed',
+      drmKeySystems: keySystems.slice(0, 4).join(', ') || 'not exposed',
       keyedElements: keys, corsCandidates: corsCandidates,
       mediaErrorEvents: diagMediaErrors, mediaErrorCodes: errors.join(', ') || 'none',
       attachAttempts: diagAttachAttempts, attachFailures: diagAttachFailures,
@@ -133,10 +162,16 @@
     relay({ __timbreDiagnose: true });
   }
   document.addEventListener('encrypted', function (e) {
-    if (e.target instanceof HTMLMediaElement) diagEncryptedEvents++;
+    if (e.target instanceof HTMLMediaElement) {
+      diagEncryptedEvents++;
+      recordInitType(e);
+    }
   }, true);
   document.addEventListener('webkitneedkey', function (e) {
-    if (e.target instanceof HTMLMediaElement) diagNeedKeyEvents++;
+    if (e.target instanceof HTMLMediaElement) {
+      diagNeedKeyEvents++;
+      recordInitType(e);
+    }
   }, true);
   document.addEventListener('error', function (e) {
     if (e.target instanceof HTMLMediaElement) diagMediaErrors++;
