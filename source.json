@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.15",
+          "buildVersion": "15",
+          "date": "2026-10-22T03:57:03Z",
+          "localizedDescription": "- Add opt-in Amazon Music Web Audio access test button (3373e41)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-15/Timbre-1.0-build-15.ipa",
+          "size": 885159,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.14",
           "buildVersion": "14",
           "date": "2026-10-22T03:23:46Z",
@@ -101,11 +110,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.14",
-      "versionDate": "2026-10-22T03:23:46Z",
-      "versionDescription": "- Add playback diagnostics (engine observers + toolbar menu report) (f549fea)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-14/Timbre-1.0-build-14.ipa",
-      "size": 884093,
+      "version": "1.0.15",
+      "versionDate": "2026-10-22T03:57:03Z",
+      "versionDescription": "- Add opt-in Amazon Music Web Audio access test button (3373e41)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-15/Timbre-1.0-build-15.ipa",
+      "size": 885159,
       "appPermissions": {}
     }
   ],
