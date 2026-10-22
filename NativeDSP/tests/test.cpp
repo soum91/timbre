@@ -75,5 +75,25 @@ int main() {
   fx.prepare(48000);fx.configure(p);std::vector<float> v(9600);for(size_t i=0;i<v.size();i++)v[i]=std::sin(i*0.02f)*0.5f;
   fx.process(v.data(),4800);for(float x:v)assert(std::isfinite(x));
  }
+ {
+  // Head tracking: a centred (mono) source moves to the left ear when the head turns right.
+  auto run=[](double yaw,bool track){
+    Effects fx; EffectsParams p; p.limiter.on=false; p.spatial.on=true; p.spatial.mode=1; p.spatial.amount=1;
+    p.spatial.surround=0; p.spatial.height=0; p.spatial.room=0; p.spatial.headTracking=track;
+    fx.prepare(48000); fx.configure(p); fx.reset();
+    std::vector<float> v(4800*2);
+    double eL=0,eR=0;
+    for(int pass=0;pass<4;pass++){
+      for(size_t i=0;i<4800;i++){ float x=std::sin((pass*4800+i)*0.05f)*0.4f; v[2*i]=x; v[2*i+1]=x; }
+      fx.setHeadYaw(pass==0?0:yaw,true); fx.process(v.data(),4800);  // start facing forward, then turn
+      if(pass==3) for(size_t i=0;i<4800;i++){ assert(std::isfinite(v[2*i])); eL+=v[2*i]*v[2*i]; eR+=v[2*i+1]*v[2*i+1]; }
+    }
+    return std::make_pair(eL,eR);
+  };
+  auto still=run(0,true), right=run(70,true), off=run(70,false);
+  assert(std::abs(still.first-still.second) < 0.1*still.first);  // centred
+  assert(right.first > right.second*1.5);                        // turned right: sound sits to the left
+  assert(std::abs(off.first-off.second) < 0.1*off.first);        // tracking off ignores yaw
+ }
  std::cout<<"PASS: native DSP tests\n";
 }

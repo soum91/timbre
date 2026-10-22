@@ -1,5 +1,6 @@
 #include "TimbreDSP.hpp"
 #include "TimbreHRTF.h"
+#include "TimbreHRTFSphere.h"
 #include <cstring>
 #if defined(__APPLE__)
 #include <Accelerate/Accelerate.h>
@@ -115,7 +116,7 @@ Effects::Effects() {
   const size_t preCap = static_cast<size_t>(0.2 * fs) + 2, shortCap = static_cast<size_t>(0.001 * fs) + 2;
   const size_t upCap = static_cast<size_t>(0.03 * fs) + 2, histCap = hrtf::kMaxTaps - 1 + kBlock;
   const size_t limCap = static_cast<size_t>(0.002 * fs) + 2;
-  total += preCap + 4 * shortCap + 10 * upCap + kSources * histCap + 3 * kBlock + 3 * limCap;
+  total += preCap + 4 * shortCap + 10 * upCap + kSources * histCap + 4 * kBlock + 3 * limCap;
   memory_.assign(total, 0.0f);
   float* at = memory_.data();
   auto take = [&at](Line& l, size_t cap) { l.buf = at; l.cap = cap; l.len = 1; l.pos = 0; at += cap; };
@@ -128,7 +129,7 @@ Effects::Effects() {
   take(pre_, preCap);
   for (auto& l : upDelay_) take(l, upCap);
   for (auto& src : src_) { src.hist = at; at += histCap; }
-  accL_ = at; at += kBlock; accR_ = at; at += kBlock; tmp_ = at; at += kBlock;
+  accL_ = at; at += kBlock; accR_ = at; at += kBlock; tmp_ = at; at += kBlock; tmp2_ = at; at += kBlock;
   take(limDelay_[0], limCap); take(limDelay_[1], limCap);
   limWindow_ = at; at += limCap;
 }
@@ -374,18 +375,44 @@ void Effects::loadHRTF() noexcept {
   int r = 0;
   for (int i = 1; i < 4; i++) if (std::fabs(hrtf::kRates[i] - fs_) < std::fabs(hrtf::kRates[r] - fs_)) r = i;
   taps_ = hrtf::kTaps[r];
+  sphereRate_ = -1;
+  for (int i = 0; i < 2; i++) if (std::fabs(hrtf_sphere::kRates[i] - fs_) < 1000) sphereRate_ = i;
   const int front = std::clamp(static_cast<int>(std::lround((std::clamp(p_.spatial.angle, 10.0, 60.0) - hrtf::kFrontMin) / hrtf::kFrontStep)), 0, hrtf::kFrontCount - 1);
-  // Sources: centre, front L/R, side L/R, rear L/R, top-front L/R.
+  // Sources: centre, front L/R, side L/R, rear L/R, top-front L/R. Odd indices are on the left.
   const int pos[kSources] = {hrtf::kCentre, front, front, hrtf::kSide, hrtf::kSide, hrtf::kRear, hrtf::kRear, hrtf::kTop, hrtf::kTop};
+  const int set = p_.spatial.hrtf == 0 ? 0 : 1;
   for (int k = 0; k < kSources; k++) {
-    const int set = p_.spatial.hrtf == 0 ? 0 : 1;
-    src_[k].hNear = hrtf::kData[set][r][pos[k]][0];
-    src_[k].hFar = hrtf::kData[set][r][pos[k]][1];
-    src_[k].left = k > 0 && (k % 2 == 1);
+    const float* nearEar = hrtf::kData[set][r][pos[k]][0];
+    const float* farEar = hrtf::kData[set][r][pos[k]][1];
+    const bool left = k > 0 && (k % 2 == 1);
+    src_[k].hR = left ? farEar : nearEar;
+    src_[k].hL = left ? nearEar : farEar;
+    src_[k].key = -1;
   }
   double e = 0;
-  for (size_t i = 0; i < taps_; i++) e += double(src_[1].hNear[i]) * src_[1].hNear[i] + double(src_[1].hFar[i]) * src_[1].hFar[i];
+  for (size_t i = 0; i < taps_; i++) e += double(src_[2].hR[i]) * src_[2].hR[i] + double(src_[2].hL[i]) * src_[2].hL[i];
   imNorm_ = e > 1e-9 ? static_cast<float>(1.0 / std::sqrt(e)) : 1.0f;
+}
+
+// Direction of virtual speaker k relative to the listener's head, mapped to the full-circle table.
+bool Effects::sphereFilters(int k, double headYaw, const float** hR, const float** hL, int* key) const noexcept {
+  if (sphereRate_ < 0) return false;
+  const double angle = std::clamp(p_.spatial.angle, 10.0, 60.0);
+  const double azimuth[kSources] = {0, -angle, angle, -90, 90, -135, 135, -45, 45};
+  const bool high = k >= 7;
+  double rel = azimuth[k] - headYaw;
+  rel = std::fmod(rel + 540.0, 360.0) - 180.0;  // wrap to [-180, 180)
+  const double mag = std::fabs(rel);
+  const int idx = high ? hrtf_sphere::kLevelCount + std::clamp(static_cast<int>(std::lround(mag / hrtf_sphere::kHighStep)), 0, hrtf_sphere::kHighCount - 1)
+                       : std::clamp(static_cast<int>(std::lround(mag / hrtf_sphere::kLevelStep)), 0, hrtf_sphere::kLevelCount - 1);
+  const bool left = rel < 0 && idx != 0 && idx != hrtf_sphere::kLevelCount;
+  const int set = p_.spatial.hrtf == 0 ? 0 : 1;
+  const float* right = hrtf_sphere::kData[set][sphereRate_][idx][0];
+  const float* leftEar = hrtf_sphere::kData[set][sphereRate_][idx][1];
+  *hR = left ? leftEar : right;
+  *hL = left ? right : leftEar;
+  *key = idx * 2 + (left ? 1 : 0);
+  return true;
 }
 
 namespace {
@@ -437,18 +464,46 @@ void Effects::immersive(float* s, size_t frames) noexcept {
       };
       for (int k = 0; k < kSources; k++) src_[k].hist[hist + i] = feeds[k];
     }
-    // Binaural render.
+    // Head tracking: follow the head, drift the reference slowly back to it (about 8 s) so the stage
+    // re-centres when you turn your whole body, like Apple's head-tracked mode.
+    const bool tracking = p_.spatial.headTracking && sphereRate_ >= 0;
+    double rel = 0;
+    if (!tracking || !headValid_) headSnapped_ = false;
+    if (tracking) {
+      const double yaw = headValid_ ? (p_.spatial.headInvert ? -headYaw_ : headYaw_) : headRef_;
+      if (headValid_ && !headSnapped_) { headRef_ = yaw; headSnapped_ = true; }  // first reading = straight ahead
+      double d = std::fmod(yaw - headRef_ + 540.0, 360.0) - 180.0;
+      headRef_ += d * std::min(1.0, static_cast<double>(n) / (8.0 * fs_));
+      headRef_ = std::fmod(headRef_ + 360.0, 360.0);
+      rel = std::fmod(yaw - headRef_ + 540.0, 360.0) - 180.0;
+    }
+    // Binaural render, crossfading a speaker over one block whenever its filter changes.
     std::fill(accL_, accL_ + n, 0.0f);
     std::fill(accR_, accR_ + n, 0.0f);
     for (int k = 0; k < kSources; k++) {
-      const float* x = src_[k].hist + hist;
-      float* nearAcc = src_[k].left ? accL_ : accR_;
-      float* farAcc = src_[k].left ? accR_ : accL_;
-      convolve(x, src_[k].hNear, taps_, tmp_, n);
-      for (size_t i = 0; i < n; i++) nearAcc[i] += tmp_[i];
-      convolve(x, src_[k].hFar, taps_, tmp_, n);
-      for (size_t i = 0; i < n; i++) farAcc[i] += tmp_[i];
-      std::memmove(src_[k].hist, src_[k].hist + n, hist * sizeof(float));
+      Source& src = src_[k];
+      const float* x = src.hist + hist;
+      const float *newR = src.hR, *newL = src.hL;
+      int newKey = src.key;
+      if (tracking) sphereFilters(k, rel, &newR, &newL, &newKey);
+      const bool fade = newKey != src.key;
+      for (int ear = 0; ear < 2; ear++) {
+        float* acc = ear == 0 ? accR_ : accL_;
+        const float* oldH = ear == 0 ? src.hR : src.hL;
+        const float* newH = ear == 0 ? newR : newL;
+        convolve(x, oldH, taps_, tmp_, n);
+        if (fade && newH != oldH) {
+          convolve(x, newH, taps_, tmp2_, n);
+          for (size_t i = 0; i < n; i++) {
+            const float t = static_cast<float>(i + 1) / static_cast<float>(n);
+            acc[i] += tmp_[i] + (tmp2_[i] - tmp_[i]) * t;
+          }
+        } else {
+          for (size_t i = 0; i < n; i++) acc[i] += tmp_[i];
+        }
+      }
+      src.hR = newR; src.hL = newL; src.key = newKey;
+      std::memmove(src.hist, src.hist + n, hist * sizeof(float));
     }
     for (size_t i = 0; i < n; i++) {
       float& L = s[2 * (off + i)];

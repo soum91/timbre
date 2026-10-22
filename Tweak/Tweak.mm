@@ -15,6 +15,8 @@
 #include <cstdint>
 #include "../NativeDSP/TimbreDSP.hpp"
 #include "CastShared.h"
+#include "HeadShared.h"
+#import <CoreMotion/CoreMotion.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -70,6 +72,7 @@ struct ThreadState {
 };
 thread_local ThreadState state;
 std::atomic<void *> seenUnits[8];
+std::atomic<const TBHeadShared *> headReader{nullptr};
 
 // Effects carry large delay lines, so they live in a small pool allocated off the audio thread
 // and are owned per AudioUnit. A slot idle for more than two seconds can be reclaimed.
@@ -126,7 +129,8 @@ static timbre::EffectsParams parseEffects(NSDictionary *d) {
     p.spatial = {flag(s, @"on", false), number(s, @"angle", 30, 5, 90), number(s, @"amount", 0.8, 0, 1),
                  number(s, @"distance", 1, 0.3, 5), (int)number(s, @"mode", 0, 0, 1),
                  number(s, @"surround", 0.5, 0, 1), number(s, @"height", 0.3, 0, 1),
-                 (int)number(s, @"hrtf", 1, 0, 1), number(s, @"room", 0.4, 0, 1)};
+                 (int)number(s, @"hrtf", 1, 0, 1), number(s, @"room", 0.4, 0, 1),
+                 flag(s, @"headTracking", false), flag(s, @"headInvert", false)};
     NSDictionary *r = section(d, @"reverb");
     p.reverb = {flag(r, @"on", false), number(r, @"decay", 1.8, 0.2, 8), number(r, @"predelay", 20, 0, 200),
                 number(r, @"damping", 6000, 1000, 16000), number(r, @"width", 1, 0, 1), number(r, @"mix", 0.25, 0, 1)};
@@ -225,13 +229,68 @@ static void recordRoute() {
         os_log(OS_LOG_DEFAULT, "Timbre: output route %{public}@ (%{public}@)", name, type);
     }
 }
+// ---------------------------------------------------------------------------
+// Head tracking. SpringBoard reads AirPods head motion (CMHeadphoneMotionManager) and publishes the yaw
+// in a small shared file; the audio tweak maps it read-only and feeds it to the Immersive renderer.
+// ---------------------------------------------------------------------------
+static TBHeadShared *headWriter = nullptr;
+static CMHeadphoneMotionManager *headManager = nil;
+static NSOperationQueue *headQueue = nil;
+
+static TBHeadShared *mapHeadForWriting() {
+    if (headWriter) return headWriter;
+    const int fd = open(TB_HEAD_PATH, O_RDWR | O_CREAT, 0666);
+    if (fd < 0) return nullptr;
+    fchmod(fd, 0666);
+    if (ftruncate(fd, TB_HEAD_FILE_SIZE) == 0) {
+        void *m = mmap(nullptr, TB_HEAD_FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (m != MAP_FAILED) headWriter = (TBHeadShared *)m;
+    }
+    close(fd);
+    if (headWriter) __atomic_store_n(&headWriter->magic, TB_HEAD_MAGIC, __ATOMIC_RELEASE);
+    return headWriter;
+}
+static void setHeadMotion(bool on) {
+    TBHeadShared *h = mapHeadForWriting();
+    if (!on) {
+        if (headManager) { [headManager stopDeviceMotionUpdates]; [headManager release]; headManager = nil; }
+        if (h) h->time = 0;
+        return;
+    }
+    Class cls = NSClassFromString(@"CMHeadphoneMotionManager");
+    if (!cls) { dlopen("/System/Library/Frameworks/CoreMotion.framework/CoreMotion", RTLD_LAZY); cls = NSClassFromString(@"CMHeadphoneMotionManager"); }
+    if (!cls) return;
+    if (h) {
+        h->source = 2;
+        if ([cls respondsToSelector:@selector(authorizationStatus)]) h->auth = (int32_t)[cls authorizationStatus];
+    }
+    if (!headManager) {
+        headManager = [cls new];
+        if (!headQueue) { headQueue = [NSOperationQueue new]; headQueue.maxConcurrentOperationCount = 1; }
+        [headManager startDeviceMotionUpdatesToQueue:headQueue withHandler:^(CMDeviceMotion *motion, NSError *error) {
+            TBHeadShared *w = mapHeadForWriting();
+            if (!w || !motion) return;
+            w->source = 2;
+            w->yaw = -motion.attitude.yaw * 180.0 / M_PI;  // CoreMotion yaw is counter-clockwise; we use turned-right positive
+            __atomic_store_n(&w->seq, w->seq + 1, __ATOMIC_RELEASE);
+            w->time = CFAbsoluteTimeGetCurrent();
+        }];
+    }
+    if (h) h->available = headManager.deviceMotionAvailable ? 1 : 0;
+}
+static bool headTrackingWanted() {
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kPrefsPaths[0]] ?: [NSDictionary dictionaryWithContentsOfFile:kPrefsPaths[1]];
+    NSDictionary *sp = section(d ?: @{}, @"spatial");
+    return [d[@"enabled"] boolValue] && flag(sp, @"on", false) && number(sp, @"mode", 0, 0, 1) == 1 && flag(sp, @"headTracking", false);
+}
+
 static void startRouteMonitor() {
     [[NSNotificationCenter defaultCenter] addObserverForName:@"AVAudioSessionRouteChangeNotification" object:nil
         queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *) { recordRoute(); }];
     // Polling as a backstop: route notifications are not guaranteed for every client.
     dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), 2 * NSEC_PER_SEC, NSEC_PER_SEC);
-    dispatch_source_set_event_handler(t, ^{ recordRoute(); });
+    dispatch_source_set_event_handler(t, ^{ recordRoute(); @autoreleasepool { setHeadMotion(headTrackingWanted()); } });
     dispatch_resume(t);
     static dispatch_source_t retained;
     retained = t;
@@ -378,6 +437,11 @@ static void applyEffects(AudioUnit unit, double rate, float *samples, UInt32 fra
         fx->configure(config->fx);
         slot->generation = config->generation;
     }
+    if (config->fx.spatial.headTracking) {
+        const TBHeadShared *h = headReader.load(std::memory_order_acquire);
+        const bool fresh = h && h->magic == TB_HEAD_MAGIC && CFAbsoluteTimeGetCurrent() - h->time < 0.5;
+        fx->setHeadYaw(fresh ? h->yaw : 0, fresh);
+    }
     fx->process(samples, frames);
 }
 // ---------------------------------------------------------------------------
@@ -388,8 +452,20 @@ std::atomic<TBCastHeader *> castRing{nullptr};
 std::atomic<bool> castActive{false}, castMute{false};
 std::atomic<uint64_t> castFrames{0};
 
+static void mapHeadForReading() {
+    if (headReader.load(std::memory_order_acquire)) return;
+    const int fd = open(TB_HEAD_PATH, O_RDONLY);
+    if (fd < 0) return;
+    struct stat st{};
+    if (fstat(fd, &st) == 0 && (uint64_t)st.st_size >= sizeof(TBHeadShared)) {
+        void *m = mmap(nullptr, TB_HEAD_FILE_SIZE, PROT_READ, MAP_SHARED, fd, 0);
+        if (m != MAP_FAILED) headReader.store((const TBHeadShared *)m, std::memory_order_release);
+    }
+    close(fd);
+}
 static void updateCastState() {
     const Config *c = active.load(std::memory_order_acquire);
+    if (c && c->fx.spatial.on && c->fx.spatial.headTracking) mapHeadForReading();
     TBCastHeader *ring = castRing.load(std::memory_order_acquire);
     if (c && c->castEnabled && !ring) {
         const int fd = open(TB_CAST_RING_PATH, O_RDWR);
@@ -539,6 +615,8 @@ static void startDiagnostics() {
     dispatch_source_set_event_handler(t, ^{
         updateCastState();
         int units = 0;
+        const TBHeadShared *head = headReader.load(std::memory_order_acquire);
+        if (head && head->magic != TB_HEAD_MAGIC) head = nullptr;
         for (auto &slot : seenUnits) if (slot.exchange(nullptr, std::memory_order_relaxed)) units++;
         const char *process = getprogname();
         const Config *c = active.load(std::memory_order_acquire);
@@ -558,7 +636,7 @@ static void startDiagnostics() {
         char text[512];
         const uint64_t fmt = statFormat.load(std::memory_order_relaxed);
         snprintf(text, sizeof(text), "time=%ld pid=%d hook=%d source=%u enabled=%d bands=%lu fx=%d calls=%llu nested=%llu frames=%llu "
-                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu route=%s rule=%s cast=%d cast_frames=%llu units=%d autopre=%.1f\n",
+                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu route=%s rule=%s cast=%d cast_frames=%llu units=%d autopre=%.1f head=%d headage=%.1f headauth=%d headavail=%d yaw=%.0f\n",
                  (long)time(nullptr), getpid(), hookedRenderOK ? 1 : 0, configSource.load(std::memory_order_relaxed),
                  c && c->enabled ? 1 : 0, c ? (unsigned long)c->count : 0ul, c && c->fxActive ? 1 : 0,
                  (unsigned long long)statCalls.load(std::memory_order_relaxed), (unsigned long long)statNested.load(std::memory_order_relaxed),
@@ -566,7 +644,9 @@ static void startDiagnostics() {
                  (unsigned long long)((fmt >> 32) & 0xff), (unsigned long long)((fmt >> 40) & 0xff), (unsigned long long)((fmt >> 48) & 0xff),
                  (unsigned long long)(fmt >> 56), (unsigned long long)(uint32_t)statRate.load(std::memory_order_relaxed), currentRouteName, currentRule,
                  castActive.load(std::memory_order_relaxed) ? 1 : 0, (unsigned long long)castFrames.load(std::memory_order_relaxed),
-                 units, autoPreampDB.load(std::memory_order_relaxed));
+                 units, autoPreampDB.load(std::memory_order_relaxed),
+                 head ? (int)head->source : 0, head && head->time > 0 ? CFAbsoluteTimeGetCurrent() - head->time : -1.0,
+                 head ? head->auth : -1, head ? head->available : 0, head ? head->yaw : 0.0);
         static const char *dirs[] = {"/var/jb/var/mobile/Library/Preferences", "/var/tmp", "/tmp"};
         for (const char *dir : dirs) {
             char path[256];

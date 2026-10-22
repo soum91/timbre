@@ -4,6 +4,11 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
+#import <CoreMotion/CoreMotion.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include "../HeadShared.h"
 #include <math.h>
 #include <notify.h>
 #include <spawn.h>
@@ -142,7 +147,7 @@ static int runHelper(NSString *command, NSString **output);
         @"comp": @{@"on": @NO, @"threshold": @(-24.0), @"knee": @6.0, @"ratio": @3.0, @"attack": @10.0, @"release": @150.0, @"makeup": @0.0},
         @"crossfeed": @{@"on": @NO, @"level": @(-6.0), @"cutoff": @700.0, @"delay": @0.3},
         @"width": @{@"on": @NO, @"width": @1.0, @"balance": @0.0, @"mono": @NO, @"swap": @NO},
-        @"spatial": @{@"on": @NO, @"angle": @30.0, @"amount": @0.8, @"distance": @1.0, @"mode": @1, @"surround": @0.5, @"height": @0.3, @"hrtf": @1, @"room": @0.4},
+        @"spatial": @{@"on": @NO, @"angle": @30.0, @"amount": @0.8, @"distance": @1.0, @"mode": @1, @"surround": @0.5, @"height": @0.3, @"hrtf": @1, @"room": @0.4, @"headTracking": @NO, @"headInvert": @NO},
         @"routing": @{@"enabled": @NO, @"devices": @{}, @"types": @{}},
         @"cast": @{@"enabled": @NO, @"device": @"", @"muteLocal": @YES},
         @"reverb": @{@"on": @NO, @"decay": @1.8, @"predelay": @20.0, @"damping": @6000.0, @"width": @1.0, @"mix": @0.25},
@@ -270,6 +275,8 @@ typedef struct {
     uint64_t calls, nested, frames, format, rate;
     int units;
     double autopre;
+    int headSource, headAuth, headAvail;
+    double headAge, yaw;
 } TBDaemonStatus;
 // The daemon's sandbox blocks Darwin notify state, so the status file it writes under the jailbreak root
 // is the primary source. Notify state is kept as a fallback for setups where it does get through.
@@ -313,6 +320,8 @@ static TBDaemonStatus daemonStatus(NSString *process) {
         s.rate = fileValue(f, @"rate");
         s.units = (int)fileValue(f, @"units");
         s.autopre = [f[@"autopre"] doubleValue];
+        s.headSource = [f[@"head"] intValue]; s.headAge = f[@"headage"] ? [f[@"headage"] doubleValue] : -1;
+        s.headAuth = f[@"headauth"] ? [f[@"headauth"] intValue] : -1; s.headAvail = [f[@"headavail"] intValue]; s.yaw = [f[@"yaw"] doubleValue];
         return s;
     }
     const uint64_t info = statusValue(process, @"info"), beat = statusValue(process, @"heartbeat");
@@ -330,6 +339,13 @@ static TBDaemonStatus daemonStatus(NSString *process) {
     s.format = statusValue(process, @"format");
     s.rate = statusValue(process, @"rate");
     return s;
+}
+static NSString *headText(TBDaemonStatus st) {
+    if (st.headSource == 0 && st.headAge < 0) return @"no data (turn it on in Spatial)";
+    if (st.headAuth == 2 || st.headAuth == 1) return @"motion permission denied; open Timbre with AirPods in to use the app instead";
+    if (st.headAge >= 0 && st.headAge < 1) return [NSString stringWithFormat:@"live from %@, yaw %.0f°", st.headSource == 3 ? @"Timbre app" : @"SpringBoard", st.yaw];
+    if (!st.headAvail) return @"waiting for head-tracking AirPods";
+    return @"no recent motion data";
 }
 static NSString *rejectText(unsigned r) {
     switch (r) {
@@ -836,6 +852,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         @[@"Result", rejectText((unsigned)(st.format >> 56))],
         @[@"Streams processed", [NSString stringWithFormat:@"%d", st.units]],
         @[@"Auto preamp", st.autopre <= 0 ? formatValue(st.autopre, TBUnitDB) : @"off"],
+        @[@"Head tracking", headText(st)],
     ];
 }
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
@@ -2038,7 +2055,7 @@ static NSDictionary *castStatus(void) {
 
 static UIViewController *spatialPage(void) {
     return [[TBEffectsPage alloc] initWithTitle:@"Spatial" symbol:@"headphones" builder:^(TBEffectsPage *p) {
-        UIStackView *s = [p section:@"Spatial" toggle:@"spatial.on" footer:@"Immersive upmixes stereo to nine virtual speakers (centre, front, sides, rears and two heights) and renders them through measured MIT KEMAR head responses. Room adds early reflections, which is what pulls the sound out of your head. Precise uses KEMAR's raw ear responses for stronger placement; Natural is flatter. Keep Amount at 100% for the full effect. Classic is the lighter interaural delay and head-shadow model. Headphones only. This is not Dolby Atmos decoding; Atmos content arrives already rendered to stereo."];
+        UIStackView *s = [p section:@"Spatial" toggle:@"spatial.on" footer:@"Immersive upmixes stereo to nine virtual speakers (centre, front, sides, rears and two heights) and renders them through measured MIT KEMAR head responses. Room adds early reflections, which is what pulls the sound out of your head. Precise uses KEMAR's raw ear responses for stronger placement; Natural is flatter. Keep Amount at 100% for the full effect. Head tracking (Immersive, AirPods Pro/Max/3/4, 44.1 or 48 kHz) keeps the speakers fixed in the room when you turn your head and slowly re-centres when you turn your body; if sounds move the wrong way, flip Invert. Classic is the lighter interaural delay and head-shadow model. Headphones only. This is not Dolby Atmos decoding; Atmos content arrives already rendered to stereo."];
         [p segment:@[@"Classic", @"Immersive"] key:@"spatial.mode" in:s];
         [p segment:@[@"Natural HRTF", @"Precise HRTF"] key:@"spatial.hrtf" in:s];
         [p chips:@[@{@"name": @"Front stage", @"values": @{@"spatial.angle": @25, @"spatial.amount": @1.0, @"spatial.surround": @0.3, @"spatial.height": @0.15, @"spatial.room": @0.35}},
@@ -2050,6 +2067,8 @@ static UIViewController *spatialPage(void) {
         [p param:@"Surround (Immersive)" key:@"spatial.surround" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
         [p param:@"Height (Immersive)" key:@"spatial.height" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
         [p param:@"Room (Immersive)" key:@"spatial.room" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
+        [p toggle:@"Head tracking (AirPods)" key:@"spatial.headTracking" in:s];
+        [p toggle:@"Invert head direction" key:@"spatial.headInvert" in:s];
         [p param:@"Distance (Classic)" key:@"spatial.distance" lo:.3 hi:5 step:.1 log:NO unit:TBUnitMeters in:s];
         UIStackView *x = [p section:@"Crossfeed" toggle:@"crossfeed.on" footer:@"Bleeds a little of each channel into the other like speakers do, so hard-panned mixes stop feeling inside your skull."];
         [p chips:@[@{@"name": @"Subtle", @"values": @{@"crossfeed.level": @(-9.5), @"crossfeed.cutoff": @650}},
@@ -2103,6 +2122,7 @@ static UIViewController *dynamicsPage(void) {
 
 @interface TimbreAppDelegate : UIResponder <UIApplicationDelegate>
 @property(nonatomic, strong) UIWindow *window;
+@property(nonatomic, strong) CMHeadphoneMotionManager *head;
 @end
 @implementation TimbreAppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
@@ -2126,6 +2146,42 @@ static UIViewController *dynamicsPage(void) {
     return YES;
 }
 - (void)applicationWillResignActive:(UIApplication *)application { [[TBStore shared] commit]; }
+// While the app is open it also publishes AirPods head motion, in case SpringBoard is not allowed to read it.
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:kChanged object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(updateHeadTracking) name:kChanged object:nil];
+    [self updateHeadTracking];
+    [NSTimer scheduledTimerWithTimeInterval:2 target:self selector:@selector(updateHeadTracking) userInfo:nil repeats:NO];
+}
+- (void)updateHeadTracking {
+    const BOOL want = [[[TBStore shared] valueAt:@"spatial.headTracking"] boolValue] && [[[TBStore shared] valueAt:@"spatial.on"] boolValue];
+    if (!want) { [self.head stopDeviceMotionUpdates]; self.head = nil; return; }
+    if (self.head) return;
+    static TBHeadShared *shared;
+    if (!shared) {
+        const int fd = open(TB_HEAD_PATH, O_RDWR | O_CREAT, 0666);
+        if (fd >= 0) {
+            fchmod(fd, 0666);
+            if (ftruncate(fd, TB_HEAD_FILE_SIZE) == 0) {
+                void *m = mmap(NULL, TB_HEAD_FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                if (m != MAP_FAILED) { shared = m; __atomic_store_n(&shared->magic, TB_HEAD_MAGIC, __ATOMIC_RELEASE); }
+            }
+            close(fd);
+        }
+    }
+    if (!shared) return;
+    self.head = [CMHeadphoneMotionManager new];
+    TBHeadShared *w = shared;
+    [self.head startDeviceMotionUpdatesToQueue:[NSOperationQueue new] withHandler:^(CMDeviceMotion *motion, NSError *error) {
+        if (!motion) return;
+        w->source = 3;
+        w->yaw = -motion.attitude.yaw * 180.0 / M_PI;
+        w->auth = (int32_t)CMHeadphoneMotionManager.authorizationStatus;
+        w->available = 1;
+        w->seq++;
+        w->time = CFAbsoluteTimeGetCurrent();
+    }];
+}
 @end
 
 int main(int argc, char **argv) {
