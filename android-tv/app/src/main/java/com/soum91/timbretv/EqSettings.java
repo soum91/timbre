@@ -28,6 +28,30 @@ final class EqSettings {
         preferences(context).edit().putInt("band_" + band, decibels).apply();
     }
 
+    static void saveGains(Context context, int[] gains) {
+        SharedPreferences.Editor editor = preferences(context).edit();
+        for (int i = 0; i < FREQUENCIES.length; i++) {
+            editor.putInt("band_" + i, Math.max(-12, Math.min(12, gains[i])));
+        }
+        editor.apply();
+    }
+
+    static void saveCustomPreset(Context context) {
+        int[] gains = readGains(context);
+        SharedPreferences.Editor editor = preferences(context).edit().putBoolean("has_custom", true);
+        for (int i = 0; i < gains.length; i++) editor.putInt("custom_band_" + i, gains[i]);
+        editor.apply();
+    }
+
+    static int[] readCustomPreset(Context context) {
+        if (!preferences(context).getBoolean("has_custom", false)) return null;
+        int[] gains = new int[FREQUENCIES.length];
+        for (int i = 0; i < gains.length; i++) {
+            gains[i] = preferences(context).getInt("custom_band_" + i, 0);
+        }
+        return gains;
+    }
+
     // Interpolate the user curve onto the device's real, fixed-band equalizer.
     // Android's public Equalizer API cannot implement arbitrary Q/biquad filters.
     static float gainAt(float frequency, int[] gains) {

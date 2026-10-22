@@ -2,108 +2,137 @@ package com.soum91.timbretv;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.Locale;
 
+/**
+ * Ten-foot Timbre UI. Its EQ and preset controls are connected to the session
+ * equalizer; unsupported DSP sections intentionally do not expose fake toggles.
+ */
 public final class MainActivity extends Activity {
+    private static final int BG = Color.rgb(12, 13, 16);
+    private static final int PANEL = Color.rgb(26, 27, 32);
+    private static final int BORDER = Color.rgb(56, 51, 45);
+    private static final int TEXT = Color.rgb(247, 245, 241);
+    private static final int MUTED = Color.rgb(179, 176, 171);
+    private static final int GOLD = Color.rgb(255, 181, 65);
+    private static final int DARK_GOLD = Color.rgb(75, 56, 30);
+    private static final String[] TABS = {"EQ", "Spatial", "Reverb", "Dynamics", "Presets"};
+
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Button[] tabButtons = new Button[TABS.length];
+    private LinearLayout page;
     private TextView status;
     private Button power;
+    private int selectedTab = 0;
+    private CurveView curve;
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             boolean enabled = EqSettings.preferences(MainActivity.this)
                     .getBoolean(EqSettings.ENABLED, false);
-            power.setText(enabled ? "Stop Timbre TV" : "Start Timbre TV");
-            status.setText(EqSettings.preferences(MainActivity.this)
-                    .getString(EqSettings.STATUS, "Ready. Enable the service to detect active playback."));
+            if (power != null) {
+                power.setText(enabled ? "●  EQ ACTIVE  ·  STOP" : "▶  START EQ");
+            }
+            if (status != null) {
+                status.setText(EqSettings.preferences(MainActivity.this)
+                        .getString(EqSettings.STATUS,
+                                "Not running. Start the EQ and play audio to check sessions."));
+            }
             handler.postDelayed(this, 2000);
         }
     };
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
         ScrollView scroll = new ScrollView(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int space = dp(22);
-        root.setPadding(space, space, space, space);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(BG);
+
+        LinearLayout root = column();
+        root.setPadding(dp(30), dp(18), dp(30), dp(24));
         scroll.addView(root);
 
-        TextView title = text("Timbre TV", 30);
-        root.addView(title);
-        root.addView(text("Experimental Android audio-session EQ for Google TV", 17));
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(header);
 
-        power = new Button(this);
-        power.setText("Start Timbre TV");
+        LinearLayout brand = column();
+        header.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
+        brand.addView(text("Timbre", 34, TEXT, true));
+        brand.addView(text("TV AUDIO LAB    /    SONY A80L", 12, GOLD, true));
+
+        power = button("▶  START EQ");
         power.setOnClickListener(view -> {
-            boolean running = EqSettings.preferences(this).getBoolean(EqSettings.ENABLED, false);
+            boolean enabled = EqSettings.preferences(this).getBoolean(EqSettings.ENABLED, false);
             Intent intent = new Intent(this, TimbreService.class);
-            intent.setAction(running ? TimbreService.STOP : TimbreService.START);
-            if (running) startService(intent);
+            intent.setAction(enabled ? TimbreService.STOP : TimbreService.START);
+            if (enabled) startService(intent);
             else startForegroundService(intent);
+            power.setText(enabled ? "▶  START EQ" : "●  EQ ACTIVE  ·  STOP");
         });
-        root.addView(power);
+        header.addView(power, new LinearLayout.LayoutParams(dp(196), dp(55)));
 
-        status = text("Checking service...", 16);
-        root.addView(status);
-        root.addView(text("Five-band curve, mapped onto the Sony's available Android EQ bands.", 15));
+        TextView intro = text(
+                "A proper remote-first interface for Timbre's accessible Android audio EQ.",
+                15, MUTED, false);
+        LinearLayout.LayoutParams introParams = new LinearLayout.LayoutParams(-1, -2);
+        introParams.topMargin = dp(13);
+        root.addView(intro, introParams);
 
-        int[] gains = EqSettings.readGains(this);
-        for (int i = 0; i < EqSettings.FREQUENCIES.length; i++) {
-            final int index = i;
-            TextView label = text("", 18);
-            root.addView(label);
-            SeekBar seekBar = new SeekBar(this);
-            seekBar.setMax(24);
-            seekBar.setProgress(gains[index] + 12);
-            updateLabel(label, index, gains[index]);
-            seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                    int gain = progress - 12;
-                    updateLabel(label, index, gain);
-                    if (fromUser) {
-                        EqSettings.saveGain(MainActivity.this, index, gain);
-                        if (EqSettings.preferences(MainActivity.this)
-                                .getBoolean(EqSettings.ENABLED, false)) {
-                            Intent update = new Intent(MainActivity.this, TimbreService.class);
-                            update.setAction(TimbreService.APPLY);
-                            startService(update);
-                        }
-                    }
-                }
-                @Override public void onStartTrackingTouch(SeekBar bar) {}
-                @Override public void onStopTrackingTouch(SeekBar bar) {}
-            });
-            root.addView(seekBar);
+        LinearLayout navigation = row();
+        LinearLayout.LayoutParams navParams = new LinearLayout.LayoutParams(-1, dp(53));
+        navParams.topMargin = dp(22);
+        root.addView(navigation, navParams);
+        for (int i = 0; i < TABS.length; i++) {
+            final int tab = i;
+            Button b = button(TABS[i]);
+            b.setOnFocusChangeListener((view, hasFocus) ->
+                    paintButton(b, tab == selectedTab, hasFocus));
+            b.setOnClickListener(view -> selectTab(tab));
+            tabButtons[i] = b;
+            LinearLayout.LayoutParams bParams =
+                    new LinearLayout.LayoutParams(0, -1, 1f);
+            bParams.rightMargin = dp(9);
+            navigation.addView(b, bParams);
         }
 
-        Button flat = new Button(this);
-        flat.setText("Reset bands to 0 dB");
-        flat.setOnClickListener(view -> {
-            for (int i = 0; i < EqSettings.FREQUENCIES.length; i++) EqSettings.saveGain(this, i, 0);
-            recreate();
-        });
-        root.addView(flat);
+        page = column();
+        LinearLayout.LayoutParams pageParams = new LinearLayout.LayoutParams(-1, -2);
+        pageParams.topMargin = dp(20);
+        root.addView(page, pageParams);
 
-        root.addView(text("ADB setup (once after install):", 17));
-        root.addView(text("adb shell pm grant com.soum91.timbretv android.permission.DUMP", 14));
-        root.addView(text("Disable Poweramp Equalizer while testing to avoid competing for the same audio effects.", 15));
-        root.addView(text("Limitations: EQ runs only on compatible Android PCM playback sessions. "
-                + "Dolby Digital Plus/Atmos passthrough may bypass it. "
-                + "This app does not encode Dolby, and the fixed-band engine cannot reproduce "
-                + "Timbre's 16-band frequency/Q filters or its native effects chain.", 15));
+        LinearLayout diagnostics = card();
+        LinearLayout.LayoutParams diagParams = new LinearLayout.LayoutParams(-1, -2);
+        diagParams.topMargin = dp(15);
+        root.addView(diagnostics, diagParams);
+        diagnostics.addView(text("PLAYBACK STATUS", 13, GOLD, true));
+        status = text("Checking audio sessions...", 15, MUTED, false);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2);
+        statusParams.topMargin = dp(7);
+        diagnostics.addView(status, statusParams);
 
         setContentView(scroll);
+        selectTab(0);
         power.requestFocus();
     }
 
@@ -118,19 +147,368 @@ public final class MainActivity extends Activity {
         super.onStop();
     }
 
-    private TextView text(String value, int sp) {
-        TextView result = new TextView(this);
-        result.setText(value);
-        result.setTextSize(sp);
-        result.setPadding(0, dp(10), 0, dp(10));
-        return result;
+    private void selectTab(int tab) {
+        selectedTab = tab;
+        for (int i = 0; i < tabButtons.length; i++) {
+            paintButton(tabButtons[i], selectedTab == i, tabButtons[i].hasFocus());
+        }
+        page.removeAllViews();
+        curve = null;
+        switch (tab) {
+            case 0: showEq(); break;
+            case 1: showUnavailable("Spatial", "HEADPHONE PROCESSING",
+                    "The iPhone tweak's immersive HRTF and head tracking are designed "
+                            + "for headphone rendering. Sony's Android audio session API "
+                            + "does not expose Timbre's original binaural DSP chain. "
+                            + "The Vizio Elevate's native Dolby Atmos decoding should "
+                            + "stay intact rather than feeding it virtual headphone surround."); break;
+            case 2: showUnavailable("Reverb", "ROOM / STUDIO / PLATE / HALL",
+                    "The tweak's mix, decay, pre-delay, damping and stereo width "
+                            + "require control over PCM samples or a compatible auxiliary "
+                            + "audio effect. This rootless TV build has neither a verified "
+                            + "reverb effect path nor the ability to re-encode Dolby."); break;
+            case 3: showUnavailable("Dynamics", "COMPRESSOR / LIMITER",
+                    "The Sony audio stack advertises Android DynamicsProcessing, "
+                            + "but a working per-app session connection and usable "
+                            + "compression parameters have not been validated. "
+                            + "Threshold, ratio, knee, attack, release and makeup "
+                            + "will only become adjustable after that integration works."); break;
+            case 4: showPresets(); break;
+            default: break;
+        }
     }
 
-    private void updateLabel(TextView view, int index, int gain) {
-        view.setText(String.format(Locale.US, "%.0f Hz: %+d dB", EqSettings.FREQUENCIES[index], gain));
+    private void showEq() {
+        LinearLayout top = row();
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        page.addView(top);
+        top.addView(text("Equalizer", 26, TEXT, true),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        top.addView(text("FIVE-BAND SESSION EQ", 12, GOLD, true));
+
+        LinearLayout body = row();
+        LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(-1, -2);
+        bodyParams.topMargin = dp(12);
+        page.addView(body, bodyParams);
+
+        LinearLayout graphCard = card();
+        LinearLayout.LayoutParams graphParams =
+                new LinearLayout.LayoutParams(0, dp(435), 1.35f);
+        graphParams.rightMargin = dp(14);
+        body.addView(graphCard, graphParams);
+        graphCard.addView(text("RESPONSE CURVE", 13, GOLD, true));
+        graphCard.addView(text("Interpolated gain at the TV's fixed EQ bands",
+                13, MUTED, false));
+        curve = new CurveView();
+        curve.setGains(EqSettings.readGains(this));
+        LinearLayout.LayoutParams curveParams =
+                new LinearLayout.LayoutParams(-1, 0, 1f);
+        curveParams.topMargin = dp(14);
+        graphCard.addView(curve, curveParams);
+
+        LinearLayout controls = card();
+        body.addView(controls, new LinearLayout.LayoutParams(0, dp(435), 1f));
+        controls.addView(text("BAND LEVELS", 13, GOLD, true));
+        int[] values = EqSettings.readGains(this);
+        for (int i = 0; i < EqSettings.FREQUENCIES.length; i++) {
+            final int index = i;
+            LinearLayout line = row();
+            line.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams lineParams = new LinearLayout.LayoutParams(-1, -2);
+            lineParams.topMargin = dp(13);
+            controls.addView(line, lineParams);
+
+            TextView label = text(frequencyLabel(EqSettings.FREQUENCIES[i]),
+                    16, TEXT, true);
+            line.addView(label, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView amount = text(gainLabel(values[i]), 16, GOLD, true);
+            line.addView(amount);
+
+            SeekBar seekBar = new SeekBar(this);
+            seekBar.setMax(24);
+            seekBar.setProgress(values[i] + 12);
+            seekBar.setProgressTintList(android.content.res.ColorStateList.valueOf(GOLD));
+            seekBar.setThumbTintList(android.content.res.ColorStateList.valueOf(TEXT));
+            seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar bar, int value, boolean user) {
+                    int gain = value - 12;
+                    amount.setText(gainLabel(gain));
+                    if (user) {
+                        EqSettings.saveGain(MainActivity.this, index, gain);
+                        if (curve != null) curve.setGains(EqSettings.readGains(MainActivity.this));
+                        applyToService();
+                    }
+                }
+                @Override public void onStartTrackingTouch(SeekBar bar) {}
+                @Override public void onStopTrackingTouch(SeekBar bar) {}
+            });
+            LinearLayout.LayoutParams sliderParams = new LinearLayout.LayoutParams(-1, dp(28));
+            controls.addView(seekBar, sliderParams);
+        }
+
+        LinearLayout footer = row();
+        LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(54));
+        footerParams.topMargin = dp(15);
+        page.addView(footer, footerParams);
+        Button flat = button("Reset curve");
+        flat.setOnClickListener(v -> {
+            setCurve(new int[]{0, 0, 0, 0, 0});
+            selectTab(0);
+        });
+        footer.addView(flat, new LinearLayout.LayoutParams(dp(190), -1));
+        Button save = button("Save as My curve");
+        LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(dp(225), -1);
+        saveParams.leftMargin = dp(12);
+        footer.addView(save, saveParams);
+        save.setOnClickListener(v -> {
+            EqSettings.saveCustomPreset(this);
+            Toast.makeText(this, "Saved to Presets → My curve", Toast.LENGTH_SHORT).show();
+        });
+        TextView info = text("D-pad: focus a slider, then use ◀  ▶ to change gain.",
+                13, MUTED, false);
+        info.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
+        footer.addView(info, new LinearLayout.LayoutParams(0, -1, 1f));
     }
 
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    private void showPresets() {
+        page.addView(text("Presets", 26, TEXT, true));
+        page.addView(text("Profiles apply real band gains to the Android session EQ. "
+                + "They do not switch Dolby codecs or output devices.", 15, MUTED, false));
+
+        presetRow("Flat", new int[]{0, 0, 0, 0, 0},
+                "Neutral response with no added gain.");
+        presetRow("Bass Boost", new int[]{6, 4, 1, 0, 0},
+                "Extra low-end weight.");
+        presetRow("V-Shape", new int[]{5, 2, -3, 2, 5},
+                "Stronger lows and highs.");
+        presetRow("Vocal Presence", new int[]{-2, 0, 3, 4, 1},
+                "Bring dialogue frequencies forward.");
+        presetRow("Treble Boost", new int[]{0, 0, 1, 4, 6},
+                "Add definition in the upper bands.");
+        presetRow("Late Night Loudness", new int[]{2, 1, 3, 1, -2},
+                "A fixed tonal profile, not a dynamics compressor.");
+        int[] custom = EqSettings.readCustomPreset(this);
+        if (custom != null) presetRow("My curve", custom, "Your last saved five-band settings.");
+        else {
+            LinearLayout c = card();
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+            params.topMargin = dp(12);
+            page.addView(c, params);
+            c.addView(text("MY CURVE", 13, GOLD, true));
+            c.addView(text("Save your adjusted EQ from the EQ tab to add a personal preset.",
+                    15, MUTED, false));
+        }
+    }
+
+    private void presetRow(String name, int[] gains, String description) {
+        LinearLayout c = row();
+        c.setGravity(Gravity.CENTER_VERTICAL);
+        c.setBackground(panelBackground(PANEL, BORDER));
+        c.setPadding(dp(18), dp(8), dp(14), dp(8));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(75));
+        params.topMargin = dp(11);
+        page.addView(c, params);
+        LinearLayout labels = column();
+        c.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+        labels.addView(text(name, 20, TEXT, true));
+        labels.addView(text(description, 13, MUTED, false));
+        Button apply = button("APPLY");
+        c.addView(apply, new LinearLayout.LayoutParams(dp(140), dp(46)));
+        apply.setOnClickListener(v -> {
+            setCurve(gains);
+            selectTab(0);
+            Toast.makeText(this, "Applied " + name, Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    private void showUnavailable(String title, String subtitle, String explanation) {
+        page.addView(text(title, 26, TEXT, true));
+        LinearLayout p = card();
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(285));
+        params.topMargin = dp(13);
+        page.addView(p, params);
+        p.addView(text(subtitle, 13, GOLD, true));
+        TextView headline = text("Not available on this unrooted TV audio path",
+                23, TEXT, true);
+        LinearLayout.LayoutParams h = new LinearLayout.LayoutParams(-1, -2);
+        h.topMargin = dp(20);
+        p.addView(headline, h);
+        TextView detail = text(explanation, 17, MUTED, false);
+        LinearLayout.LayoutParams d = new LinearLayout.LayoutParams(-1, -2);
+        d.topMargin = dp(13);
+        p.addView(detail, d);
+        TextView note = text("Original Timbre feature preserved as a design target; "
+                + "no inactive controls are presented as working DSP.", 14, GOLD, false);
+        LinearLayout.LayoutParams n = new LinearLayout.LayoutParams(-1, -2);
+        n.topMargin = dp(18);
+        p.addView(note, n);
+    }
+
+    private void setCurve(int[] gains) {
+        EqSettings.saveGains(this, gains);
+        applyToService();
+    }
+
+    private void applyToService() {
+        if (EqSettings.preferences(this).getBoolean(EqSettings.ENABLED, false)) {
+            Intent update = new Intent(this, TimbreService.class);
+            update.setAction(TimbreService.APPLY);
+            startService(update);
+        }
+    }
+
+    private LinearLayout card() {
+        LinearLayout layout = column();
+        layout.setBackground(panelBackground(PANEL, BORDER));
+        layout.setPadding(dp(20), dp(17), dp(20), dp(17));
+        return layout;
+    }
+
+    private GradientDrawable panelBackground(int color, int stroke) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(15));
+        d.setStroke(dp(1), stroke);
+        return d;
+    }
+
+    private LinearLayout column() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        return l;
+    }
+
+    private LinearLayout row() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.HORIZONTAL);
+        return l;
+    }
+
+    private TextView text(String value, int sp, int color, boolean bold) {
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextColor(color);
+        v.setTextSize(sp);
+        if (bold) v.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return v;
+    }
+
+    private Button button(String value) {
+        Button b = new Button(this);
+        b.setText(value);
+        b.setTextSize(15);
+        b.setAllCaps(false);
+        b.setPadding(dp(8), 0, dp(8), 0);
+        b.setOnFocusChangeListener((view, hasFocus) -> paintButton(b, false, hasFocus));
+        paintButton(b, false, false);
+        return b;
+    }
+
+    private void paintButton(Button b, boolean selected, boolean focused) {
+        if (focused) {
+            b.setTextColor(BG);
+            b.setBackground(panelBackground(GOLD, GOLD));
+        } else if (selected) {
+            b.setTextColor(GOLD);
+            b.setBackground(panelBackground(DARK_GOLD, GOLD));
+        } else {
+            b.setTextColor(TEXT);
+            b.setBackground(panelBackground(PANEL, BORDER));
+        }
+    }
+
+    private String frequencyLabel(float frequency) {
+        return frequency >= 1000
+                ? String.format(Locale.US, "%.0f kHz", frequency / 1000f)
+                : String.format(Locale.US, "%.0f Hz", frequency);
+    }
+
+    private String gainLabel(int gain) {
+        return String.format(Locale.US, "%+d dB", gain);
+    }
+
+    private int dp(float v) {
+        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private final class CurveView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int[] gains = {0, 0, 0, 0, 0};
+
+        CurveView() { super(MainActivity.this); }
+
+        void setGains(int[] values) {
+            gains = values.clone();
+            invalidate();
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float left = dp(39), right = getWidth() - dp(12);
+            float top = dp(24), bottom = getHeight() - dp(30);
+            if (right <= left || bottom <= top) return;
+            float height = bottom - top;
+            for (int db = -12; db <= 12; db += 6) {
+                float y = top + (12f - db) / 24f * height;
+                paint.setColor(db == 0 ? 0xFF8B795D : 0xFF39383A);
+                paint.setStrokeWidth(dp(1));
+                canvas.drawLine(left, y, right, y, paint);
+                paint.setColor(MUTED);
+                paint.setTextSize(dp(11));
+                canvas.drawText(db > 0 ? "+" + db : Integer.toString(db),
+                        dp(4), y + dp(4), paint);
+            }
+            float[] ticks = {60, 250, 1000, 4000, 12000};
+            String[] labels = {"60", "250", "1k", "4k", "12k"};
+            for (int i = 0; i < ticks.length; i++) {
+                float x = xFor(ticks[i], left, right);
+                paint.setColor(0xFF343438);
+                canvas.drawLine(x, top, x, bottom, paint);
+                paint.setColor(MUTED);
+                paint.setTextSize(dp(11));
+                canvas.drawText(labels[i], x - dp(11), bottom + dp(21), paint);
+            }
+            Path line = new Path();
+            Path fill = new Path();
+            boolean first = true;
+            float zero = top + height / 2f;
+            for (int px = (int) left; px <= (int) right; px += 2) {
+                float f = (float) (20 * Math.pow(1000, (px - left) / (right - left)));
+                float gain = EqSettings.gainAt(f, gains);
+                float y = top + (12f - gain) / 24f * height;
+                if (first) {
+                    line.moveTo(px, y);
+                    fill.moveTo(px, zero);
+                    fill.lineTo(px, y);
+                    first = false;
+                } else {
+                    line.lineTo(px, y);
+                    fill.lineTo(px, y);
+                }
+            }
+            fill.lineTo(right, zero);
+            fill.close();
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0x44FFB541);
+            canvas.drawPath(fill, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            paint.setColor(GOLD);
+            canvas.drawPath(line, paint);
+            paint.setStyle(Paint.Style.FILL);
+            for (int i = 0; i < ticks.length; i++) {
+                float x = xFor(ticks[i], left, right);
+                float y = top + (12f - gains[i]) / 24f * height;
+                paint.setColor(PANEL);
+                canvas.drawCircle(x, y, dp(7), paint);
+                paint.setColor(GOLD);
+                canvas.drawCircle(x, y, dp(5), paint);
+            }
+        }
+
+        private float xFor(float frequency, float left, float right) {
+            return (float) (left + Math.log(frequency / 20f) / Math.log(1000)
+                    * (right - left));
+        }
     }
 }

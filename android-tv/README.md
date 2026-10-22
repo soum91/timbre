@@ -22,6 +22,11 @@ determines which players and routes can be processed.
 
 1. Download the debug APK from the **Android TV APK (experimental)** GitHub
    Actions build for this branch and sideload it onto the Sony A80L.
+   GitHub Actions may use a different debug signing certificate for each run.
+   If installing over an older debug build reports
+   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, run
+   `adb uninstall com.soum91.timbretv` before the new install. This erases
+   the prototype's locally saved EQ curve and preset.
 2. Grant diagnostics permission over ADB (one command, not a multi-line block):
 
    ```shell
@@ -31,7 +36,7 @@ determines which players and routes can be processed.
 3. Disable Poweramp Equalizer during the test so it does not compete for the
    same Android effect engine.
 4. Open **Timbre TV (Experimental)** from the Google TV apps screen and press
-   **Start Timbre TV**. A foreground notification keeps the session monitor
+   **Start EQ**. A foreground notification keeps the session monitor
    active; press **Stop Timbre TV** when finished.
 5. Start a YouTube or Netflix session and check the status count. Adjust a
    band by an obvious amount. If the app cannot attach to the session, the
@@ -40,6 +45,16 @@ determines which players and routes can be processed.
 6. Independently verify the **actual incoming audio format on the Vizio
    Elevate P514a-H6** during the test. EQ audibility alone cannot prove that
    HDMI eARC is still carrying E-AC3.
+
+## Ten-foot UI
+
+- Native Google TV home launcher icon and 320x180 banner.
+- Dark/amber remote-first tabs styled after the original Timbre tweak.
+- EQ curve visualization reflecting five genuinely editable system EQ bands.
+- Working Flat, Bass Boost, V-Shape, Vocal Presence, Treble Boost and
+  Late Night Loudness tonal presets, plus one locally saved My curve.
+- Separate Spatial, Reverb and Dynamics pages document unavailable processing.
+  No dummy switch pretends to activate an unsupported audio engine.
 
 ## Current limitations
 
