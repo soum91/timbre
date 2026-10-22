@@ -4,6 +4,11 @@ An experimental Android TV controller for the system's available audio session
 equalizer. This is a new Android implementation, not a binary port of the iOS
 `AudioUnitRender` hook.
 
+The original `NativeDSP/TimbreDSP.cpp` now also builds into the APK through
+Android NDK and JNI for app-owned interleaved Float32 stereo PCM. The device
+runs a small self-check on load, visible in the playback status card.
+This does not attach the native engine to other applications' audio sessions.
+
 ## Why this architecture
 
 On the Sony A80L, `dumpsys media.audio_flinger` confirmed an NXP Android
@@ -56,6 +61,20 @@ determines which players and routes can be processed.
 - Separate Spatial, Reverb and Dynamics pages document unavailable processing.
   No dummy switch pretends to activate an unsupported audio engine.
 
+## Native DSP integration
+
+The `libtimbre_native.so` library is compiled for both 32-bit ARM and 64-bit
+ARM, using the unchanged original DSP source and its non-Apple convolution
+fallback. JNI exposes processing of app-owned stereo Float32 buffers with up
+to 16 true parameterized filter bands, plus the original compressor, reverb
+and spatial effects. Its filter type order is defined by `FilterType` in
+`NativeDSP/TimbreDSP.hpp`.
+
+For now, TV-wide playback processing still uses Android's fixed-band
+`Equalizer` audio-session effect. The platform does not provide a supported
+rootless hook that passes Netflix or YouTube PCM into the native engine,
+and the native bridge does not decode or encode Dolby Digital Plus or Atmos.
+
 ## Current limitations
 
 - Five user gain points are interpolated onto the TV's native fixed EQ bands.
@@ -74,7 +93,7 @@ determines which players and routes can be processed.
 
 ## Build
 
-Requires JDK 17, Android SDK 35 and Gradle 8.9:
+Requires JDK 17, Android SDK 35, NDK 27.2, CMake 3.22 and Gradle 8.9:
 
 ```shell
 cd android-tv

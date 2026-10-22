@@ -130,6 +130,13 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2);
         statusParams.topMargin = dp(7);
         diagnostics.addView(status, statusParams);
+        TextView nativeStatus = text(NativeDsp.isReady()
+                ? "NATIVE DSP  ·  Original 16-band C++ engine linked and self-tested (offline PCM only)"
+                : "NATIVE DSP  ·  Not available on this Android build",
+                12, GOLD, true);
+        LinearLayout.LayoutParams nativeParams = new LinearLayout.LayoutParams(-1, -2);
+        nativeParams.topMargin = dp(9);
+        diagnostics.addView(nativeStatus, nativeParams);
 
         setContentView(scroll);
         selectTab(0);
