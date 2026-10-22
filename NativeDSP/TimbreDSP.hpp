@@ -7,6 +7,8 @@ enum class FilterType { Peaking, LowShelf, HighShelf, LowPass, HighPass, BandPas
 struct Band { bool enabled=true; FilterType type=FilterType::Peaking; double frequency=1000, gainDB=0, q=1; };
 struct Coeffs { double b0,b1,b2,a1,a2; };
 Coeffs coefficients(const Band& band, double sampleRate);
+// Highest boost (dB) of the combined response of the enabled bands, sampled 5 Hz..20 kHz.
+double curvePeakDB(const Band* bands, size_t count, double sampleRate);
 class StereoEQ {
 public:
   explicit StereoEQ(double sampleRate);
@@ -26,7 +28,8 @@ struct CompressorParams { bool on=false; double threshold=-24, knee=6, ratio=3, 
 struct CrossfeedParams { bool on=false; double level=-6, cutoff=700, delay=0.3; };
 struct WidthParams { bool on=false; double width=1, balance=0; bool mono=false, swap=false; };
 // mode 0: classic interaural delay/head shadow; mode 1: Immersive (stereo upmix to 9 virtual speakers rendered with KEMAR HRTFs).
-struct SpatialParams { bool on=false; double angle=30, amount=0.8, distance=1; int mode=0; double surround=0.5, height=0.3; };
+// hrtf 0: KEMAR diffused (flatter, "Natural"); 1: KEMAR normal (stronger localisation, "Precise"). room adds early reflections.
+struct SpatialParams { bool on=false; double angle=30, amount=0.8, distance=1; int mode=0; double surround=0.5, height=0.3; int hrtf=1; double room=0.4; };
 struct ReverbParams { bool on=false; double decay=1.8, predelay=20, damping=6000, width=1, mix=0.25; };
 struct LimiterParams { bool on=true; double ceiling=-1; };
 struct EffectsParams {
@@ -59,8 +62,9 @@ private:
   Source src_[kSources];
   size_t taps_=0;
   float* accL_=nullptr; float* accR_=nullptr; float* tmp_=nullptr;
-  Line upDelay_[6]; OnePole upLP_[6]; OnePole topLP_[2];
-  float imAmount_=0, imSurround_=0, imHeight_=0, imNorm_=1;
+  Line upDelay_[10]; OnePole upLP_[10]; OnePole topLP_[2];
+  Line limDelay_[2]; float* limWindow_=nullptr; size_t limLen_=1, limPos_=0; float limAtt_=0;
+  float imAmount_=0, imSurround_=0, imHeight_=0, imRoom_=0, imNorm_=1;
   static float tick(Line& l, float x) noexcept;
   static void clear(Line& l) noexcept;
   void clearReverb() noexcept;

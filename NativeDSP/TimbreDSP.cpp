@@ -11,7 +11,7 @@ namespace timbre {
 Coeffs coefficients(const Band& b, double fs) {
   if (!(fs>100) || !std::isfinite(fs)) throw std::invalid_argument("sample rate");
   if (!std::isfinite(b.frequency)||!std::isfinite(b.q)||!std::isfinite(b.gainDB)) throw std::invalid_argument("band");
-  const double f=std::clamp(b.frequency,10.0,fs*0.49), q=std::clamp(b.q,0.05,40.0);
+  const double f=std::clamp(b.frequency,2.0,fs*0.49), q=std::clamp(b.q,0.05,40.0);
   const double A=std::pow(10.0,std::clamp(b.gainDB,-120.0,120.0)/40.0);
   const double w=2*std::acos(-1.0)*f/fs,c=std::cos(w),s=std::sin(w),al=s/(2*q),sA=2*std::sqrt(A)*al;
   double b0,b1,b2,a0,a1,a2;
@@ -28,6 +28,30 @@ Coeffs coefficients(const Band& b, double fs) {
   }
   return {b0/a0,b1/a0,b2/a0,a1/a0,a2/a0};
 }
+double curvePeakDB(const Band* bands, size_t count, double fs) {
+  if (!(fs > 100) || !bands) return 0;
+  Coeffs k[64];
+  size_t n = 0;
+  for (size_t i = 0; i < count && n < 64; i++) {
+    if (!bands[i].enabled) continue;
+    try { k[n++] = coefficients(bands[i], fs); } catch (...) {}
+  }
+  double peak = 0;
+  for (int i = 0; i < 400; i++) {
+    const double f = 5.0 * std::pow(4000.0, i / 399.0);
+    if (f >= fs * 0.49) break;
+    const double w = 2 * std::acos(-1.0) * f / fs, c1 = std::cos(w), s1 = std::sin(w), c2 = std::cos(2 * w), s2 = std::sin(2 * w);
+    double db = 0;
+    for (size_t j = 0; j < n; j++) {
+      const double nr = k[j].b0 + k[j].b1 * c1 + k[j].b2 * c2, ni = -(k[j].b1 * s1 + k[j].b2 * s2);
+      const double dr = 1 + k[j].a1 * c1 + k[j].a2 * c2, di = -(k[j].a1 * s1 + k[j].a2 * s2);
+      db += 10 * std::log10(std::max((nr * nr + ni * ni) / std::max(dr * dr + di * di, 1e-30), 1e-18));
+    }
+    peak = std::max(peak, db);
+  }
+  return peak;
+}
+
 StereoEQ::StereoEQ(double fs):sampleRate_(fs) { if(!(fs>100)||!std::isfinite(fs)) throw std::invalid_argument("sample rate"); }
 void StereoEQ::configure(const std::vector<Band>& bands,double preampDB) {
   if(!std::isfinite(preampDB)) throw std::invalid_argument("preamp");
@@ -67,6 +91,13 @@ inline float onePoleCoeff(double hz, double fs) {
   return static_cast<float>(1.0 - std::exp(-2.0 * kPi * std::clamp(hz, 10.0, fs * 0.45) / fs));
 }
 inline float sanitize(float x) { return std::isfinite(x) ? x : 0.0f; }
+// Transparent below 90% of the ceiling, then bends smoothly into it.
+inline float softClip(float x, float c) {
+  const float a = std::fabs(x), knee = 0.9f * c;
+  if (a <= knee) return x;
+  const float y = knee + (c - knee) * std::tanh((a - knee) / (c - knee));
+  return x < 0 ? -y : y;
+}
 }
 
 bool effectsActive(const EffectsParams& p) noexcept {
@@ -83,7 +114,8 @@ Effects::Effects() {
   }
   const size_t preCap = static_cast<size_t>(0.2 * fs) + 2, shortCap = static_cast<size_t>(0.001 * fs) + 2;
   const size_t upCap = static_cast<size_t>(0.03 * fs) + 2, histCap = hrtf::kMaxTaps - 1 + kBlock;
-  total += preCap + 4 * shortCap + 6 * upCap + kSources * histCap + 3 * kBlock;
+  const size_t limCap = static_cast<size_t>(0.002 * fs) + 2;
+  total += preCap + 4 * shortCap + 10 * upCap + kSources * histCap + 3 * kBlock + 3 * limCap;
   memory_.assign(total, 0.0f);
   float* at = memory_.data();
   auto take = [&at](Line& l, size_t cap) { l.buf = at; l.cap = cap; l.len = 1; l.pos = 0; at += cap; };
@@ -97,6 +129,8 @@ Effects::Effects() {
   for (auto& l : upDelay_) take(l, upCap);
   for (auto& src : src_) { src.hist = at; at += histCap; }
   accL_ = at; at += kBlock; accR_ = at; at += kBlock; tmp_ = at; at += kBlock;
+  take(limDelay_[0], limCap); take(limDelay_[1], limCap);
+  limWindow_ = at; at += limCap;
 }
 
 float Effects::tick(Line& l, float x) noexcept {
@@ -147,6 +181,9 @@ void Effects::reset() noexcept {
   for (auto& o : upLP_) o.z = 0;
   for (auto& o : topLP_) o.z = 0;
   for (auto& src : src_) std::fill(src.hist, src.hist + hrtf::kMaxTaps - 1 + kBlock, 0.0f);
+  clear(limDelay_[0]); clear(limDelay_[1]);
+  std::fill(limWindow_, limWindow_ + limDelay_[0].cap, 0.0f);
+  limPos_ = 0;
   compEnv_ = 0;
   limGain_ = 1;
 }
@@ -189,17 +226,20 @@ void Effects::configure(const EffectsParams& p) noexcept {
   imAmount_ = static_cast<float>(std::clamp(p.spatial.amount, 0.0, 1.0));
   imSurround_ = static_cast<float>(std::clamp(p.spatial.surround, 0.0, 1.0));
   imHeight_ = static_cast<float>(std::clamp(p.spatial.height, 0.0, 1.0));
+  imRoom_ = static_cast<float>(std::clamp(p.spatial.room, 0.0, 1.0));
   {
-    const double delaysMs[6] = {11, 13, 19, 23, 5, 6};
-    for (int i = 0; i < 6; i++) {
+    // 0-3: decorrelated side/rear ambience, 4-5: height, 6-9: early reflections of the front pair
+    const double delaysMs[10] = {11, 13, 19, 23, 5, 6, 7, 9, 15, 18};
+    const double cutoffs[10] = {7000, 7000, 4500, 4500, 0, 0, 6000, 6000, 3500, 3500};
+    for (int i = 0; i < 10; i++) {
       upDelay_[i].len = std::clamp<size_t>(static_cast<size_t>(std::lround(delaysMs[i] * 0.001 * fs)), 1, upDelay_[i].cap);
-      upLP_[i].a = onePoleCoeff(i < 2 ? 7000.0 : 4500.0, fs);
+      if (cutoffs[i] > 0) upLP_[i].a = onePoleCoeff(cutoffs[i], fs);
     }
     for (auto& o : topLP_) o.a = onePoleCoeff(1500.0, fs);
   }
   loadHRTF();
   const bool immersiveNow = p.spatial.on && p.spatial.mode == 1, immersiveBefore = old.spatial.on && old.spatial.mode == 1;
-  if (immersiveNow && (!immersiveBefore || old.spatial.angle != p.spatial.angle)) {
+  if (immersiveNow && (!immersiveBefore || old.spatial.angle != p.spatial.angle || old.spatial.hrtf != p.spatial.hrtf)) {
     for (auto& src : src_) std::fill(src.hist, src.hist + hrtf::kMaxTaps - 1 + kBlock, 0.0f);
   }
 
@@ -228,7 +268,12 @@ void Effects::configure(const EffectsParams& p) noexcept {
   // Output + limiter
   outGain_ = db2lin(std::clamp(p.outputDB, -48.0, 24.0));
   ceiling_ = db2lin(std::clamp(p.limiter.ceiling, -24.0, 0.0));
-  limRel_ = static_cast<float>(std::exp(-1.0 / (0.08 * fs)));
+  limRel_ = static_cast<float>(std::exp(-1.0 / (0.12 * fs)));
+  // 1.5 ms lookahead: the gain starts falling before a peak reaches the output.
+  limLen_ = std::clamp<size_t>(static_cast<size_t>(0.0015 * fs), 1, limDelay_[0].cap);
+  limDelay_[0].len = limDelay_[1].len = limLen_;
+  limAtt_ = static_cast<float>(1.0 - std::exp(-1.0 / std::max(1.0, limLen_ / 3.0)));
+  if (limPos_ >= limLen_) limPos_ = 0;
 }
 
 void Effects::process(float* s, size_t frames) noexcept {
@@ -307,11 +352,15 @@ void Effects::process(float* s, size_t frames) noexcept {
     float L = s[2 * i] * outGain_, R = s[2 * i + 1] * outGain_;
 
     if (p.limiter.on) {
-      const float peak = std::max(std::fabs(L), std::fabs(R));
+      // Lookahead peak limiter: window max over the delay, smooth gain, then a soft knee instead of a hard clip.
+      limWindow_[limPos_] = std::max(std::fabs(L), std::fabs(R));
+      if (++limPos_ >= limLen_) limPos_ = 0;
+      float peak = 0;
+      for (size_t k = 0; k < limLen_; k++) peak = std::max(peak, limWindow_[k]);
       const float target = peak > ceiling_ ? ceiling_ / peak : 1.0f;
-      limGain_ = target < limGain_ ? target : target + (limGain_ - target) * limRel_;
-      L = std::clamp(L * limGain_, -ceiling_, ceiling_);
-      R = std::clamp(R * limGain_, -ceiling_, ceiling_);
+      limGain_ = target < limGain_ ? limGain_ + (target - limGain_) * limAtt_ : target + (limGain_ - target) * limRel_;
+      L = softClip(tick(limDelay_[0], L) * limGain_, ceiling_);
+      R = softClip(tick(limDelay_[1], R) * limGain_, ceiling_);
     }
 
     s[2 * i] = sanitize(L);
@@ -329,8 +378,9 @@ void Effects::loadHRTF() noexcept {
   // Sources: centre, front L/R, side L/R, rear L/R, top-front L/R.
   const int pos[kSources] = {hrtf::kCentre, front, front, hrtf::kSide, hrtf::kSide, hrtf::kRear, hrtf::kRear, hrtf::kTop, hrtf::kTop};
   for (int k = 0; k < kSources; k++) {
-    src_[k].hNear = hrtf::kData[r][pos[k]][0];
-    src_[k].hFar = hrtf::kData[r][pos[k]][1];
+    const int set = p_.spatial.hrtf == 0 ? 0 : 1;
+    src_[k].hNear = hrtf::kData[set][r][pos[k]][0];
+    src_[k].hFar = hrtf::kData[set][r][pos[k]][1];
     src_[k].left = k > 0 && (k % 2 == 1);
   }
   double e = 0;
@@ -371,10 +421,18 @@ void Effects::immersive(float* s, size_t frames) noexcept {
       topLP_[0].z += topLP_[0].a * (L - topLP_[0].z);
       topLP_[1].z += topLP_[1].a * (R - topLP_[1].z);
       const float tl = tick(upDelay_[4], L - topLP_[0].z), tr = tick(upDelay_[5], R - topLP_[1].z);
+      // Early reflections: the front pair bouncing off side walls and the back wall. These are what make
+      // headphone sound feel like it is in a room instead of inside your head.
+      float refl[4];
+      const float srcs[4] = {L, R, L, R};
+      for (int d = 0; d < 4; d++) {
+        upLP_[6 + d].z += upLP_[6 + d].a * (srcs[d] - upLP_[6 + d].z);
+        refl[d] = tick(upDelay_[6 + d], upLP_[6 + d].z);
+      }
       const float feeds[kSources] = {
         C, L - 0.5f * C, R - 0.5f * C,
-        0.6f * imSurround_ * sides[0], -0.6f * imSurround_ * sides[1],
-        0.45f * imSurround_ * sides[2], -0.45f * imSurround_ * sides[3],
+        0.6f * imSurround_ * sides[0] + 0.38f * imRoom_ * refl[0], -0.6f * imSurround_ * sides[1] + 0.38f * imRoom_ * refl[1],
+        0.45f * imSurround_ * sides[2] + 0.26f * imRoom_ * refl[2], -0.45f * imSurround_ * sides[3] + 0.26f * imRoom_ * refl[3],
         0.5f * imHeight_ * tl, 0.5f * imHeight_ * tr,
       };
       for (int k = 0; k < kSources; k++) src_[k].hist[hist + i] = feeds[k];

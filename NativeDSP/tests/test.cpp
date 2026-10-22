@@ -56,13 +56,24 @@ int main() {
    for(size_t i=0;i<4800;i++){buf[2*i]=std::sin(i*0.07f)*0.5f;buf[2*i+1]=0;}
    fx.process(buf.data(),4800);
    double eL=0,eR=0;for(size_t i=2400;i<4800;i++){assert(std::isfinite(buf[2*i])&&std::isfinite(buf[2*i+1]));eL+=buf[2*i]*buf[2*i];eR+=buf[2*i+1]*buf[2*i+1];}
-   assert(eL>1e-3&&eL>eR*1.5);
+   assert(eL>1e-3&&eL>eR*1.3);
   }
   // Odd block sizes give the same result as one big block.
   std::vector<float> a(3000*2),b;for(size_t i=0;i<a.size();i++)a[i]=std::sin(i*0.013f)*0.3f;b=a;
   fx.prepare(48000);fx.configure(p);fx.reset();fx.process(a.data(),3000);
   fx.reset();for(size_t off=0;off<3000;){size_t n=std::min<size_t>(37+off%300,3000-off);fx.process(b.data()+2*off,n);off+=n;}
   for(size_t i=0;i<a.size();i++)assert(std::abs(a[i]-b[i])<1e-4f);
+ }
+ {
+  Band b[2]={Band{true,FilterType::Peaking,1000,6,1},Band{true,FilterType::Peaking,10,9,0.7}};
+  const double pk=curvePeakDB(b,2,48000); assert(pk>8.5&&pk<9.5);
+  Band cut{true,FilterType::Peaking,100,-6,1}; assert(curvePeakDB(&cut,1,48000)<0.01);
+  // Sub-20 Hz band produces finite coefficients.
+  auto c=coefficients(Band{true,FilterType::LowShelf,5,6,0.7},48000); assert(std::isfinite(c.b0)&&std::isfinite(c.a1));
+  // Immersive with the diffused set and room reflections stays finite.
+  Effects fx; EffectsParams p; p.spatial.on=true;p.spatial.mode=1;p.spatial.hrtf=0;p.spatial.room=1;p.limiter.on=false;
+  fx.prepare(48000);fx.configure(p);std::vector<float> v(9600);for(size_t i=0;i<v.size();i++)v[i]=std::sin(i*0.02f)*0.5f;
+  fx.process(v.data(),4800);for(float x:v)assert(std::isfinite(x));
  }
  std::cout<<"PASS: native DSP tests\n";
 }

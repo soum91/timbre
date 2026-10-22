@@ -20,7 +20,7 @@
 #include <sys/stat.h>
 
 namespace {
-constexpr size_t kMaxBands = 16;
+constexpr size_t kMaxBands = 18;  // 16 user bands + room for speaker protection
 constexpr size_t kEffectSlots = 4;
 // The jailbreak-root copy is readable from sandboxed daemons; the legacy path is a fallback.
 static NSString *const kPrefsPaths[] = {
@@ -50,16 +50,26 @@ std::atomic<uint64_t> sequence{1};
 dispatch_queue_t reloadQueue;
 
 struct FilterState { double z1[2]{}, z2[2]{}; };
-struct ThreadState {
-    bool inHook = false;
+// EQ filter memory must belong to one audio stream. A render thread can serve several AudioUnits in turn,
+// so each thread keeps a few per-unit states instead of one (sharing one reset the filters every callback,
+// which sounded like noise/crackle).
+struct UnitEQ {
     AudioUnit unit = nullptr;
-    uint64_t generation = 0;
+    uint64_t generation = 0, lastUse = 0;
     double rate = 0;
     size_t count = 0;
     timbre::Coeffs coefficients[kMaxBands]{};
     FilterState filters[kMaxBands]{};
 };
+constexpr int kUnitStates = 6;
+struct ThreadState {
+    bool inHook = false;
+    uint64_t clock = 0;
+    UnitEQ eq[kUnitStates];
+    UnitEQ *cur = nullptr;
+};
 thread_local ThreadState state;
+std::atomic<void *> seenUnits[8];
 
 // Effects carry large delay lines, so they live in a small pool allocated off the audio thread
 // and are owned per AudioUnit. A slot idle for more than two seconds can be reclaimed.
@@ -79,6 +89,7 @@ uint64_t staleTicks = 0;
 enum Reject : uint8_t { kOK = 0, kDisabled, kRenderError, kNoBuffers, kNoFormat, kNotPCM, kSampleType, kLayout, kRate };
 std::atomic<uint64_t> statCalls{0}, statNested{0}, statFrames{0}, statFormat{0};
 std::atomic<uint32_t> configSource{0};
+std::atomic<double> autoPreampDB{1};
 bool hookedRenderOK = false, hookedUninitOK = false;
 
 static bool valid(double x, double lo, double hi) {
@@ -114,7 +125,8 @@ static timbre::EffectsParams parseEffects(NSDictionary *d) {
     NSDictionary *s = section(d, @"spatial");
     p.spatial = {flag(s, @"on", false), number(s, @"angle", 30, 5, 90), number(s, @"amount", 0.8, 0, 1),
                  number(s, @"distance", 1, 0.3, 5), (int)number(s, @"mode", 0, 0, 1),
-                 number(s, @"surround", 0.5, 0, 1), number(s, @"height", 0.3, 0, 1)};
+                 number(s, @"surround", 0.5, 0, 1), number(s, @"height", 0.3, 0, 1),
+                 (int)number(s, @"hrtf", 1, 0, 1), number(s, @"room", 0.4, 0, 1)};
     NSDictionary *r = section(d, @"reverb");
     p.reverb = {flag(r, @"on", false), number(r, @"decay", 1.8, 0.2, 8), number(r, @"predelay", 20, 0, 200),
                 number(r, @"damping", 6000, 1000, 16000), number(r, @"width", 1, 0, 1), number(r, @"mix", 0.25, 0, 1)};
@@ -137,6 +149,7 @@ static NSString *const kRoutePath = @"/var/jb/var/mobile/Library/Preferences/com
 static NSString *const kKnownRoutesPath = @"/var/jb/var/mobile/Library/Preferences/com.soum91.timbreaudio.routes.plist";
 char currentRouteName[96] = "unknown";
 char currentRule[64] = "current";
+char currentGroup[32] = "";
 
 static NSString *routeGroup(NSString *type) {
     if ([type isEqualToString:@"Speaker"] || [type isEqualToString:@"Receiver"]) return @"speaker";
@@ -153,6 +166,8 @@ static NSDictionary *applyRouteRule(NSDictionary *d) {
     NSDictionary *route = [NSDictionary dictionaryWithContentsOfFile:kRoutePath];
     NSString *name = [route[@"name"] isKindOfClass:[NSString class]] ? route[@"name"] : @"unknown";
     strlcpy(currentRouteName, name.UTF8String ?: "unknown", sizeof(currentRouteName));
+    NSString *routeType = [route[@"type"] isKindOfClass:[NSString class]] ? route[@"type"] : @"";
+    strlcpy(currentGroup, routeGroup(routeType).UTF8String ?: "", sizeof(currentGroup));
     for (char *c = currentRouteName; *c; c++) if (*c == ' ' || *c == '=') *c = '_';
     NSDictionary *routing = d[@"routing"];
     if (![routing isKindOfClass:[NSDictionary class]] || ![routing[@"enabled"] boolValue] || ![route isKindOfClass:[NSDictionary class]]) return d;
@@ -251,7 +266,7 @@ static void reloadSettings() {
                 double g = [b[@"gain"] doubleValue];
                 double q = [b[@"q"] doubleValue];
                 NSInteger type = [b[@"type"] integerValue];
-                if (!valid(f, 20, 20000) || !valid(g, -24, 24) || !valid(q, 0.2, 10) || type < 0 || type > 7) continue;
+                if (!valid(f, 5, 22000) || !valid(g, -24, 24) || !valid(q, 0.2, 10) || type < 0 || type > 7) continue;
                 next->bands[next->count++] = timbre::Band{true, static_cast<timbre::FilterType>(type), f, g, q};
             }
         } else {
@@ -259,9 +274,21 @@ static void reloadSettings() {
             double f = d[@"frequency"] ? [d[@"frequency"] doubleValue] : 1000;
             double g = d[@"gain"] ? [d[@"gain"] doubleValue] : 6;
             double q = d[@"q"] ? [d[@"q"] doubleValue] : 1;
-            if (valid(f, 20, 20000) && valid(g, -24, 24) && valid(q, 0.2, 10))
+            if (valid(f, 5, 22000) && valid(g, -24, 24) && valid(q, 0.2, 10))
                 next->bands[next->count++] = timbre::Band{true, timbre::FilterType::Peaking, f, g, q};
         }
+        // Speaker protection: the iPhone speaker cannot reproduce deep bass, and boosting it there only
+        // drives the diaphragm into distortion. Add a steep high-pass when that is the output.
+        if (flag(d, @"speakerProtect", true) && !strcmp(currentGroup, "speaker") && next->count < kMaxBands) {
+            next->bands[next->count++] = timbre::Band{true, timbre::FilterType::HighPass, 150, 0, 0.707};
+            if (next->count < kMaxBands) next->bands[next->count++] = timbre::Band{true, timbre::FilterType::HighPass, 150, 0, 0.707};
+        }
+        // Auto preamp (anti-clip): pull the input down by the highest boost in the EQ curve.
+        if (flag(d, @"autoPreamp", false)) {
+            const double peak = timbre::curvePeakDB(next->bands, next->count, 48000);
+            next->preamp = std::pow(10., -std::min(24.0, std::max(0.0, peak + 0.3)) / 20.);
+            autoPreampDB.store(-std::min(24.0, std::max(0.0, peak + 0.3)), std::memory_order_relaxed);
+        } else autoPreampDB.store(1, std::memory_order_relaxed);  // 1 = not in use
         next->castEnabled = flag(section(d, @"cast"), @"enabled", false);
         next->fx = parseEffects(d);
         next->fxActive = timbre::effectsActive(next->fx);
@@ -274,31 +301,49 @@ static void reloadSettings() {
     }
 }
 static void prepare(ThreadState &s, AudioUnit unit, double rate, const Config *config) {
-    if (s.unit == unit && s.rate == rate && s.generation == config->generation) return;
-    const bool routeChanged = s.unit != unit || s.rate != rate;
-    s.unit = unit; s.rate = rate; s.generation = config->generation;
-    const size_t previous = s.count;
-    s.count = 0;
-    // No allocations: coefficients are recalculated on route/config change only.
+    UnitEQ *e = nullptr, *oldest = &s.eq[0];
+    for (auto &candidate : s.eq) {
+        if (candidate.unit == unit) { e = &candidate; break; }
+        if (candidate.lastUse < oldest->lastUse) oldest = &candidate;
+    }
+    if (!e) { e = oldest; *e = UnitEQ{}; e->unit = unit; }
+    e->lastUse = ++s.clock;
+    s.cur = e;
+    if (e->rate == rate && e->generation == config->generation) return;
+    const bool rateChanged = e->rate != rate;
+    e->rate = rate; e->generation = config->generation;
+    const size_t previous = e->count;
+    e->count = 0;
+    // No allocations: coefficients are recalculated on rate/config change only.
     for (size_t i = 0; i < config->count; ++i) {
-        try { s.coefficients[s.count++] = timbre::coefficients(config->bands[i], rate); }
-        catch (...) { s.count = 0; break; }
+        try { e->coefficients[e->count++] = timbre::coefficients(config->bands[i], rate); }
+        catch (...) { e->count = 0; break; }
     }
     // Keep filter memory across parameter edits so dragging a band does not click.
-    if (routeChanged || s.count != previous) for (auto &f : s.filters) f = {};
+    if (rateChanged || e->count != previous) for (auto &f : e->filters) f = {};
 }
 static void process(float *samples, UInt32 frames, const Config *config) noexcept {
+    UnitEQ *e = state.cur;
+    if (!e) return;
     for (UInt32 i = 0; i < frames; ++i) for (unsigned ch = 0; ch < 2; ++ch) {
         const size_t at = size_t(i) * 2 + ch;
         double x = samples[at] * config->preamp;
-        for (size_t j = 0; j < state.count; ++j) {
-            const auto &k = state.coefficients[j]; auto &z = state.filters[j];
+        for (size_t j = 0; j < e->count; ++j) {
+            const auto &k = e->coefficients[j]; auto &z = e->filters[j];
             double y = k.b0 * x + z.z1[ch];
             z.z1[ch] = k.b1 * x - k.a1 * y + z.z2[ch];
             z.z2[ch] = k.b2 * x - k.a2 * y;
             x = y;
         }
         samples[at] = std::isfinite(x) ? static_cast<float>(x) : 0.f;
+    }
+}
+static void noteUnit(AudioUnit unit) noexcept {
+    void *u = (void *)unit;
+    for (auto &slot : seenUnits) {
+        void *cur = slot.load(std::memory_order_relaxed);
+        if (cur == u) return;
+        if (!cur && slot.compare_exchange_strong(cur, u, std::memory_order_relaxed)) return;
     }
 }
 static Slot *slotFor(AudioUnit unit) noexcept {
@@ -454,6 +499,7 @@ static Reject render(AudioUnit unit, UInt32 bus, UInt32 frames, AudioBufferList 
         }
     }
     statFrames.fetch_add(frames, std::memory_order_relaxed);
+    noteUnit(unit);
     return kOK;
 }
 OSStatus hookedRender(AudioUnit unit, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,
@@ -471,7 +517,8 @@ OSStatus hookedRender(AudioUnit unit, AudioUnitRenderActionFlags *flags, const A
     return result;
 }
 OSStatus hookedUninit(AudioUnit unit) {
-    if (state.unit == unit) { state.unit = nullptr; state.generation = 0; }
+    for (auto &e : state.eq) if (e.unit == unit) e = UnitEQ{};
+    state.cur = nullptr;
     for (auto &s : slots) {
         void *expected = (void *)unit;
         s.owner.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
@@ -491,6 +538,8 @@ static void startDiagnostics() {
     dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC, 250 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(t, ^{
         updateCastState();
+        int units = 0;
+        for (auto &slot : seenUnits) if (slot.exchange(nullptr, std::memory_order_relaxed)) units++;
         const char *process = getprogname();
         const Config *c = active.load(std::memory_order_acquire);
         uint64_t slotsReady = 0;
@@ -509,14 +558,15 @@ static void startDiagnostics() {
         char text[512];
         const uint64_t fmt = statFormat.load(std::memory_order_relaxed);
         snprintf(text, sizeof(text), "time=%ld pid=%d hook=%d source=%u enabled=%d bands=%lu fx=%d calls=%llu nested=%llu frames=%llu "
-                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu route=%s rule=%s cast=%d cast_frames=%llu\n",
+                 "format_flags=0x%llx channels=%llu bits=%llu buffers=%llu result=%llu rate=%llu route=%s rule=%s cast=%d cast_frames=%llu units=%d autopre=%.1f\n",
                  (long)time(nullptr), getpid(), hookedRenderOK ? 1 : 0, configSource.load(std::memory_order_relaxed),
                  c && c->enabled ? 1 : 0, c ? (unsigned long)c->count : 0ul, c && c->fxActive ? 1 : 0,
                  (unsigned long long)statCalls.load(std::memory_order_relaxed), (unsigned long long)statNested.load(std::memory_order_relaxed),
                  (unsigned long long)statFrames.load(std::memory_order_relaxed), (unsigned long long)(fmt & 0xffffffff),
                  (unsigned long long)((fmt >> 32) & 0xff), (unsigned long long)((fmt >> 40) & 0xff), (unsigned long long)((fmt >> 48) & 0xff),
                  (unsigned long long)(fmt >> 56), (unsigned long long)(uint32_t)statRate.load(std::memory_order_relaxed), currentRouteName, currentRule,
-                 castActive.load(std::memory_order_relaxed) ? 1 : 0, (unsigned long long)castFrames.load(std::memory_order_relaxed));
+                 castActive.load(std::memory_order_relaxed) ? 1 : 0, (unsigned long long)castFrames.load(std::memory_order_relaxed),
+                 units, autoPreampDB.load(std::memory_order_relaxed));
         static const char *dirs[] = {"/var/jb/var/mobile/Library/Preferences", "/var/tmp", "/tmp"};
         for (const char *dir : dirs) {
             char path[256];

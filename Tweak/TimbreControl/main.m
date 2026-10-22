@@ -138,11 +138,11 @@ static int runHelper(NSString *command, NSString **output);
 }
 + (NSDictionary *)defaults {
     return @{
-        @"enabled": @NO, @"preamp": @(-3.0), @"output": @0.0,
+        @"enabled": @NO, @"preamp": @(-3.0), @"output": @0.0, @"autoPreamp": @YES, @"speakerProtect": @YES,
         @"comp": @{@"on": @NO, @"threshold": @(-24.0), @"knee": @6.0, @"ratio": @3.0, @"attack": @10.0, @"release": @150.0, @"makeup": @0.0},
         @"crossfeed": @{@"on": @NO, @"level": @(-6.0), @"cutoff": @700.0, @"delay": @0.3},
         @"width": @{@"on": @NO, @"width": @1.0, @"balance": @0.0, @"mono": @NO, @"swap": @NO},
-        @"spatial": @{@"on": @NO, @"angle": @30.0, @"amount": @0.8, @"distance": @1.0, @"mode": @1, @"surround": @0.5, @"height": @0.3},
+        @"spatial": @{@"on": @NO, @"angle": @30.0, @"amount": @0.8, @"distance": @1.0, @"mode": @1, @"surround": @0.5, @"height": @0.3, @"hrtf": @1, @"room": @0.4},
         @"routing": @{@"enabled": @NO, @"devices": @{}, @"types": @{}},
         @"cast": @{@"enabled": @NO, @"device": @"", @"muteLocal": @YES},
         @"reverb": @{@"on": @NO, @"decay": @1.8, @"predelay": @20.0, @"damping": @6000.0, @"width": @1.0, @"mix": @0.25},
@@ -268,6 +268,8 @@ typedef struct {
     pid_t pid;
     int source, bands, slots;
     uint64_t calls, nested, frames, format, rate;
+    int units;
+    double autopre;
 } TBDaemonStatus;
 // The daemon's sandbox blocks Darwin notify state, so the status file it writes under the jailbreak root
 // is the primary source. Notify state is kept as a fallback for setups where it does get through.
@@ -309,6 +311,8 @@ static TBDaemonStatus daemonStatus(NSString *process) {
         s.format = (fileValue(f, @"format_flags") & 0xffffffff) | (fileValue(f, @"channels") & 0xff) << 32 | (fileValue(f, @"bits") & 0xff) << 40 |
                    (fileValue(f, @"buffers") & 0xff) << 48 | (fileValue(f, @"result") & 0xff) << 56;
         s.rate = fileValue(f, @"rate");
+        s.units = (int)fileValue(f, @"units");
+        s.autopre = [f[@"autopre"] doubleValue];
         return s;
     }
     const uint64_t info = statusValue(process, @"info"), beat = statusValue(process, @"heartbeat");
@@ -492,8 +496,8 @@ static const double kGraphDB = 18;
     }
     return self;
 }
-- (CGFloat)xForFrequency:(double)f { return (CGFloat)(log(clampd(f, 20, 20000) / 20) / log(1000)) * self.bounds.size.width; }
-- (double)frequencyForX:(CGFloat)x { return 20 * pow(1000, clampd(x / self.bounds.size.width, 0, 1)); }
+- (CGFloat)xForFrequency:(double)f { return (CGFloat)(log(clampd(f, 5, 20000) / 5) / log(4000)) * self.bounds.size.width; }
+- (double)frequencyForX:(CGFloat)x { return 5 * pow(4000, clampd(x / self.bounds.size.width, 0, 1)); }
 - (CGFloat)yForDB:(double)db { const CGFloat h = self.bounds.size.height; return h / 2 - (CGFloat)(clampd(db, -kGraphDB, kGraphDB) / kGraphDB) * (h / 2 - 12); }
 - (double)dbForY:(CGFloat)y { const CGFloat h = self.bounds.size.height; return (h / 2 - y) / (h / 2 - 12) * kGraphDB; }
 - (CGPoint)pointForBand:(NSDictionary *)b {
@@ -506,11 +510,11 @@ static const double kGraphDB = 18;
     const CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
     NSDictionary *gridFont = @{NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:9 weight:UIFontWeightMedium], NSForegroundColorAttributeName: [UIColor colorWithWhite:.4 alpha:1]};
     CGContextSetLineWidth(c, .5);
-    for (NSNumber *f in @[@50, @100, @200, @500, @1000, @2000, @5000, @10000]) {
+    for (NSNumber *f in @[@10, @20, @50, @100, @200, @500, @1000, @2000, @5000, @10000]) {
         const CGFloat x = [self xForFrequency:f.doubleValue];
         CGContextSetStrokeColorWithColor(c, [UIColor colorWithWhite:1 alpha:.07].CGColor);
         CGContextMoveToPoint(c, x, 0); CGContextAddLineToPoint(c, x, h); CGContextStrokePath(c);
-        if (f.intValue == 100 || f.intValue == 1000 || f.intValue == 10000)
+        if (f.intValue == 20 || f.intValue == 100 || f.intValue == 1000 || f.intValue == 10000)
             [(f.intValue >= 1000 ? [NSString stringWithFormat:@"%dk", f.intValue / 1000] : f.stringValue) drawAtPoint:CGPointMake(x + 3, h - 13) withAttributes:gridFont];
     }
     for (NSNumber *db in @[@(-12), @(-6), @0, @6, @12]) {
@@ -531,7 +535,7 @@ static const double kGraphDB = 18;
             CGMutablePathRef fill = CGPathCreateMutable();
             CGPathMoveToPoint(fill, NULL, 0, h / 2);
             for (int i = 0; i < n; i++) {
-                const double f = 20 * pow(1000, i / (double)(n - 1)), db = tbMagnitudeDB(k, f, kGraphRate);
+                const double f = 5 * pow(4000, i / (double)(n - 1)), db = tbMagnitudeDB(k, f, kGraphRate);
                 total[i] += db;
                 CGPathAddLineToPoint(fill, NULL, i * w / (n - 1), [self yForDB:db]);
             }
@@ -590,7 +594,7 @@ static const double kGraphDB = 18;
     if (_dragging < 0 || _dragging >= (NSInteger)[TBStore shared].bands.count) return;
     NSMutableDictionary *b = [TBStore shared].bands[(NSUInteger)_dragging];
     if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) {
-        b[@"frequency"] = @(roundSignificant(clampd([self frequencyForX:p.x], 20, 20000), 3));
+        b[@"frequency"] = @(roundSignificant(clampd([self frequencyForX:p.x], 5, 20000), [self frequencyForX:p.x] < 100 ? 2 : 3));
         if (typeUsesGain([b[@"type"] integerValue])) b[@"gain"] = @(round(clampd([self dbForY:p.y], -24, 24) * 10) / 10);
         if (self.onEdit) self.onEdit(_dragging, NO);
     } else {
@@ -650,7 +654,7 @@ static const double kGraphDB = 18;
         _header.menu = [owner menuForBand:index];
 
         _gain = [self fader:-24 :24 def:0 log:NO step:.1]; _gain.accent = YES; _gain.color = color;
-        _freq = [self fader:20 :20000 def:1000 log:YES step:0];
+        _freq = [self fader:5 :20000 def:1000 log:YES step:0];
         _q = [self fader:.2 :10 def:1.41 log:YES step:0];
 
         UIStackView *faders = [[UIStackView alloc] initWithArrangedSubviews:@[_gain, _freq, _q]];
@@ -830,6 +834,8 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         @[@"Frames processed", rate(2)],
         @[@"Last stream", formatText(st.format, st.rate)],
         @[@"Result", rejectText((unsigned)(st.format >> 56))],
+        @[@"Streams processed", [NSString stringWithFormat:@"%d", st.units]],
+        @[@"Auto preamp", st.autopre <= 0 ? formatValue(st.autopre, TBUnitDB) : @"off"],
     ];
 }
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
@@ -903,6 +909,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     UISlider *_preamp;
     UIButton *_statusPill;
     UIButton *_castButton;
+    UIButton *_autoButton;
     NSTimer *_statusTimer;
     uint64_t _lastFrames;
     NSInteger _selected;
@@ -959,7 +966,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     _preampValue.tag = 100;
     [_preampValue addTarget:self action:@selector(editValue:) forControlEvents:UIControlEventTouchUpInside];
     [_preampValue.widthAnchor constraintEqualToConstant:70].active = YES;
-    UIButton *autoGain = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButton *autoGain = _autoButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [autoGain setTitle:@"Auto" forState:UIControlStateNormal];
     autoGain.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
     autoGain.tintColor = accentColor();
@@ -1119,18 +1126,32 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
 - (void)stripSelected:(TBBandStrip *)strip { if (strip.index != _selected) [self selectBand:strip.index scroll:NO]; }
 - (void)stripChanged:(TBBandStrip *)strip final:(BOOL)final {
     [_graph setNeedsDisplay];
+    if (final) [self updatePreampLabel];
     [self.store changed];
 }
 - (void)bandEdited:(NSInteger)i final:(BOOL)final {
     [[self stripAt:i] refresh];
     [_graph setNeedsDisplay];
+    if (final) [self updatePreampLabel];
     [self.store changed];
 }
 - (void)powerChanged { [self.store setValue:@(_power.on) at:@"enabled"]; [self.store changed]; }
 - (void)updatePreampLabel {
+    const BOOL autoOn = [[self.store valueAt:@"autoPreamp"] boolValue];
+    const double shown = autoOn ? clampd(-ceil(([self curvePeak] + .3) * 10) / 10, -24, 0) : _preamp.value;
+    if (autoOn) _preamp.value = (float)shown;
+    _preamp.enabled = !autoOn;
+    _preamp.alpha = autoOn ? .45 : 1;
     [UIView performWithoutAnimation:^{
-        [self->_preampValue setTitle:formatValue(self->_preamp.value, TBUnitDB) forState:UIControlStateNormal];
+        [self->_preampValue setTitle:formatValue(shown, TBUnitDB) forState:UIControlStateNormal];
         [self->_preampValue layoutIfNeeded];
+        UIButtonConfiguration *cfg = autoOn ? [UIButtonConfiguration filledButtonConfiguration] : [UIButtonConfiguration plainButtonConfiguration];
+        cfg.title = @"Auto";
+        cfg.baseBackgroundColor = accentColor();
+        cfg.baseForegroundColor = autoOn ? UIColor.blackColor : accentColor();
+        cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        cfg.contentInsets = NSDirectionalEdgeInsetsMake(4, 10, 4, 10);
+        self->_autoButton.configuration = cfg;
     }];
 }
 - (void)preampChanged {
@@ -1139,11 +1160,10 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
     [self updatePreampLabel];
     [self.store changed];
 }
-- (void)autoPreamp {
-    // Pull the preamp down by the highest boost in the combined curve so nothing clips.
+- (double)curvePeak {
     double peak = 0;
     for (int i = 0; i < 300; i++) {
-        const double f = 20 * pow(1000, i / 299.);
+        const double f = 5 * pow(4000, i / 299.);
         double sum = 0;
         for (NSDictionary *b in self.store.bands) {
             if (![b[@"enabled"] boolValue]) continue;
@@ -1151,9 +1171,14 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         }
         peak = fmax(peak, sum);
     }
-    const double v = clampd(-ceil(peak * 10) / 10, -24, 0);
-    [self.store setValue:@(v) at:@"preamp"];
-    _preamp.value = (float)v;
+    return peak;
+}
+// Auto (anti-clip) keeps the preamp at minus the curve's highest boost, recomputed by the tweak on every change.
+- (void)autoPreamp {
+    const BOOL on = ![[self.store valueAt:@"autoPreamp"] boolValue];
+    [self.store setValue:@(on) at:@"autoPreamp"];
+    if (!on) [self.store setValue:@(clampd(-ceil([self curvePeak] * 10) / 10, -24, 0)) at:@"preamp"];
+    _preamp.value = [[self.store valueAt:@"preamp"] floatValue];
     [self updatePreampLabel];
     [self.store changed];
 }
@@ -1224,7 +1249,7 @@ static NSArray<NSString *> *audioDaemons(void) { return @[@"mediaserverd", @"aud
         bandIndex = ((TBBandStrip *)v).index;
         NSDictionary *b = self.store.bands[(NSUInteger)bandIndex];
         if (sender.tag == 0) { key = @"gain"; title = @"Gain (dB)"; unit = TBUnitDB; lo = -24; hi = 24; }
-        else if (sender.tag == 1) { key = @"frequency"; title = @"Frequency (Hz)"; unit = TBUnitHz; lo = 20; hi = 20000; }
+        else if (sender.tag == 1) { key = @"frequency"; title = @"Frequency (Hz)"; unit = TBUnitHz; lo = 5; hi = 20000; }
         else { key = @"q"; title = @"Q"; unit = TBUnitQ; lo = .2; hi = 10; }
         current = [b[key] doubleValue];
         title = [NSString stringWithFormat:@"Band %ld %@", (long)bandIndex + 1, title];
@@ -1679,7 +1704,7 @@ static NSArray<NSString *> *effectKeys(void) { return @[@"output", @"comp", @"cr
         const double f = [text substringWithRange:[m rangeAtIndex:2]].doubleValue;
         const double g = [m rangeAtIndex:3].location != NSNotFound ? [text substringWithRange:[m rangeAtIndex:3]].doubleValue : 0;
         const double q = [m rangeAtIndex:4].location != NSNotFound ? [text substringWithRange:[m rangeAtIndex:4]].doubleValue : .71;
-        [bands addObject:@{@"enabled": @YES, @"type": type, @"frequency": @(clampd(f, 20, 20000)), @"gain": @(clampd(g, -24, 24)), @"q": @(clampd(q, .2, 10))}];
+        [bands addObject:@{@"enabled": @YES, @"type": type, @"frequency": @(clampd(f, 5, 20000)), @"gain": @(clampd(g, -24, 24)), @"q": @(clampd(q, .2, 10))}];
     }
     if (bands.count == 0) {
         UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Nothing to import" message:@"Copy Equalizer APO / AutoEq text such as\n\nPreamp: -6.2 dB\nFilter 1: ON PK Fc 105 Hz Gain 6.0 dB Q 0.70" preferredStyle:UIAlertControllerStyleAlert];
@@ -2013,16 +2038,18 @@ static NSDictionary *castStatus(void) {
 
 static UIViewController *spatialPage(void) {
     return [[TBEffectsPage alloc] initWithTitle:@"Spatial" symbol:@"headphones" builder:^(TBEffectsPage *p) {
-        UIStackView *s = [p section:@"Spatial" toggle:@"spatial.on" footer:@"Immersive upmixes stereo to nine virtual speakers (centre, front, sides, rears and two heights) and renders them through measured MIT KEMAR head responses. Classic is the lighter interaural delay and head-shadow model. Headphones only. This is not Dolby Atmos decoding; Atmos content arrives already rendered to stereo."];
+        UIStackView *s = [p section:@"Spatial" toggle:@"spatial.on" footer:@"Immersive upmixes stereo to nine virtual speakers (centre, front, sides, rears and two heights) and renders them through measured MIT KEMAR head responses. Room adds early reflections, which is what pulls the sound out of your head. Precise uses KEMAR's raw ear responses for stronger placement; Natural is flatter. Keep Amount at 100% for the full effect. Classic is the lighter interaural delay and head-shadow model. Headphones only. This is not Dolby Atmos decoding; Atmos content arrives already rendered to stereo."];
         [p segment:@[@"Classic", @"Immersive"] key:@"spatial.mode" in:s];
-        [p chips:@[@{@"name": @"Front stage", @"values": @{@"spatial.angle": @20, @"spatial.amount": @0.7, @"spatial.surround": @0.2, @"spatial.height": @0.1}},
-                   @{@"name": @"Studio", @"values": @{@"spatial.angle": @30, @"spatial.amount": @0.85, @"spatial.surround": @0.4, @"spatial.height": @0.25}},
-                   @{@"name": @"Theatre", @"values": @{@"spatial.angle": @40, @"spatial.amount": @1.0, @"spatial.surround": @0.75, @"spatial.height": @0.5}},
-                   @{@"name": @"Wide room", @"values": @{@"spatial.angle": @55, @"spatial.amount": @0.9, @"spatial.surround": @0.6, @"spatial.height": @0.35}}] in:s];
+        [p segment:@[@"Natural HRTF", @"Precise HRTF"] key:@"spatial.hrtf" in:s];
+        [p chips:@[@{@"name": @"Front stage", @"values": @{@"spatial.angle": @25, @"spatial.amount": @1.0, @"spatial.surround": @0.3, @"spatial.height": @0.15, @"spatial.room": @0.35}},
+                   @{@"name": @"Studio", @"values": @{@"spatial.angle": @30, @"spatial.amount": @1.0, @"spatial.surround": @0.45, @"spatial.height": @0.3, @"spatial.room": @0.5}},
+                   @{@"name": @"Theatre", @"values": @{@"spatial.angle": @40, @"spatial.amount": @1.0, @"spatial.surround": @0.8, @"spatial.height": @0.6, @"spatial.room": @0.7}},
+                   @{@"name": @"Wide room", @"values": @{@"spatial.angle": @55, @"spatial.amount": @1.0, @"spatial.surround": @0.6, @"spatial.height": @0.4, @"spatial.room": @0.9}}] in:s];
         [p param:@"Front speaker angle" key:@"spatial.angle" lo:10 hi:60 step:1 log:NO unit:TBUnitDeg in:s];
         [p param:@"Amount" key:@"spatial.amount" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
         [p param:@"Surround (Immersive)" key:@"spatial.surround" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
         [p param:@"Height (Immersive)" key:@"spatial.height" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
+        [p param:@"Room (Immersive)" key:@"spatial.room" lo:0 hi:1 step:.01 log:NO unit:TBUnitPct in:s];
         [p param:@"Distance (Classic)" key:@"spatial.distance" lo:.3 hi:5 step:.1 log:NO unit:TBUnitMeters in:s];
         UIStackView *x = [p section:@"Crossfeed" toggle:@"crossfeed.on" footer:@"Bleeds a little of each channel into the other like speakers do, so hard-panned mixes stop feeling inside your skull."];
         [p chips:@[@{@"name": @"Subtle", @"values": @{@"crossfeed.level": @(-9.5), @"crossfeed.cutoff": @650}},
@@ -2066,8 +2093,9 @@ static UIViewController *dynamicsPage(void) {
         [p param:@"Attack" key:@"comp.attack" lo:.1 hi:200 step:0 log:YES unit:TBUnitMs in:c];
         [p param:@"Release" key:@"comp.release" lo:10 hi:1000 step:0 log:YES unit:TBUnitMs in:c];
         [p param:@"Makeup" key:@"comp.makeup" lo:-12 hi:24 step:.1 log:NO unit:TBUnitDB in:c];
-        UIStackView *o = [p section:@"Output" toggle:nil footer:@"The limiter catches peaks after every effect so boosts never clip."];
+        UIStackView *o = [p section:@"Output" toggle:nil footer:@"Auto preamp (EQ tab) lowers the input by your curve's highest boost so the EQ itself never clips. The limiter looks 1.5 ms ahead and bends peaks softly into the ceiling. Speaker protection cuts deep bass below 150 Hz only on the iPhone speaker, which cannot play it and distorts when pushed."];
         [p param:@"Output gain" key:@"output" lo:-24 hi:12 step:.1 log:NO unit:TBUnitDB in:o];
+        [p toggle:@"Protect iPhone speaker" key:@"speakerProtect" in:o];
         [p toggle:@"Limiter" key:@"limiter.on" in:o];
         [p param:@"Ceiling" key:@"limiter.ceiling" lo:-12 hi:0 step:.1 log:NO unit:TBUnitDB in:o];
     }];
