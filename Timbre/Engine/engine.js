@@ -75,8 +75,77 @@
   var state = disabledHere ? 'off' : 'idle';
   var lastStatus = '';
 
+  // ---------- passive playback diagnostics ----------
+  // Intentionally no media URLs, account data, audio samples or DRM key data.
+  var diagID = Math.random().toString(36).slice(2, 10);
+  var diagEncryptedEvents = 0, diagNeedKeyEvents = 0, diagMediaErrors = 0;
+  var diagAttachAttempts = 0, diagAttachFailures = 0;
+  var diagCorsRetries = 0, diagCorsFailures = 0;
+  var diagLastAttachError = '', diagLastDetail = '';
+
+  function diagnosticSourceKind(el) {
+    var src = '';
+    try { src = el.currentSrc || el.src || ''; } catch (e) {}
+    if (el.srcObject) return 'MediaStream';
+    if (/^blob:/i.test(src)) return 'blob / possible MSE';
+    if (/^data:/i.test(src)) return 'data URL';
+    if (/\.m3u8(?:$|[?#])/i.test(src)) return 'HLS';
+    if (/^https?:/i.test(src)) return 'HTTP media';
+    return src ? 'other' : 'no source visible';
+  }
+
+  function diagnosticSnapshot() {
+    var els = Array.from(seen).slice(-32);
+    try {
+      document.querySelectorAll('audio,video').forEach(function (el) {
+        if (els.indexOf(el) < 0 && els.length < 32) els.push(el);
+      });
+    } catch (e) {}
+    var kinds = [], playing = 0, keys = 0, corsCandidates = 0, errors = [];
+    els.slice(0, 32).forEach(function (el) {
+      try {
+        var kind = diagnosticSourceKind(el);
+        if (kinds.indexOf(kind) < 0) kinds.push(kind);
+        if (!el.paused && !el.ended) playing++;
+        if (isEncrypted(el)) keys++;
+        if (corsBlocked(el)) corsCandidates++;
+        if (el.error && el.error.code && errors.indexOf(el.error.code) < 0) errors.push(el.error.code);
+      } catch (e) {}
+    });
+    return {
+      type: 'playbackDiagnostic', frameID: diagID,
+      mediaCount: els.length, playing: playing, attached: attached.size,
+      kinds: kinds.slice(0, 8).join(', ') || 'none observed',
+      encryptedEvents: diagEncryptedEvents, needKeyEvents: diagNeedKeyEvents,
+      keyedElements: keys, corsCandidates: corsCandidates,
+      mediaErrorEvents: diagMediaErrors, mediaErrorCodes: errors.join(', ') || 'none',
+      attachAttempts: diagAttachAttempts, attachFailures: diagAttachFailures,
+      attachError: diagLastAttachError, corsRetries: diagCorsRetries, corsFailures: diagCorsFailures,
+      engineState: state, engineDetail: diagLastDetail,
+      audioContext: ctx ? ctx.state : 'not initialized',
+      hasWebAudio: !!(window.AudioContext || window.webkitAudioContext),
+      hasMSE: !!(window.MediaSource || window.ManagedMediaSource || window.WebKitMediaSource),
+      compatibility: compat, disabled: disabledHere, enabled: !!cfg.enabled
+    };
+  }
+  function diagnose() {
+    post(diagnosticSnapshot());
+    relay({ __timbreDiagnose: true });
+  }
+  document.addEventListener('encrypted', function (e) {
+    if (e.target instanceof HTMLMediaElement) diagEncryptedEvents++;
+  }, true);
+  document.addEventListener('webkitneedkey', function (e) {
+    if (e.target instanceof HTMLMediaElement) diagNeedKeyEvents++;
+  }, true);
+  document.addEventListener('error', function (e) {
+    if (e.target instanceof HTMLMediaElement) diagMediaErrors++;
+  }, true);
+
+
   function status(s, extra) {
     state = s;
+    diagLastDetail = String(extra || '').replace(/https?:\/\/\S+/g, '[URL]').slice(0, 150);
     var key = s + ':' + attached.size + ':' + (extra || '');
     if (key === lastStatus) return;
     lastStatus = key;
@@ -471,6 +540,7 @@
     if (corsBlocked(el)) { corsRetry(el); return; }
     if (!ensureCtx()) { status('error', 'no AudioContext'); return; }
     try {
+      diagAttachAttempts++;
       var s = ctx.createMediaElementSource(el);
       s.connect(G.input);
       attached.set(el, s);
@@ -478,7 +548,9 @@
       status('active');
       watchSilence(el);
     } catch (e) {
-      status('error', String(e && e.message || e));
+      diagAttachFailures++;
+      diagLastAttachError = String(e && e.message || e).replace(/https?:\/\/\S+/g, '[URL]').slice(0, 150);
+      status('error', diagLastAttachError);
     }
   }
 
@@ -490,6 +562,7 @@
     var h = ''; try { h = new URL(src, location.href).hostname; } catch (e) {}
     if (corsTried.has(el) || !window.fetch) { status('cors', h); return; }
     corsTried.add(el);
+    diagCorsRetries++;
     var ac = window.AbortController ? new AbortController() : null;
     fetch(src, { method: 'GET', mode: 'cors', credentials: 'omit', signal: ac ? ac.signal : undefined })
       .then(function (r) {
@@ -503,7 +576,7 @@
         el.addEventListener('loadedmetadata', seek, { once: true });
         if (wasPlaying) { var p = el.play(); if (p && p.catch) p.catch(function () {}); }
       })
-      .catch(function () { status('cors', h); });
+      .catch(function () { diagCorsFailures++; status('cors', h); });
   }
 
   function srcKind(el) {
@@ -690,6 +763,7 @@
       loadIR(id, b64);
     },
     report: function () { lastStatus = ''; status(state); relay({ __timbreReport: 1 }); },
+    diagnose: diagnose,
     sampleRate: function () { return ctx ? ctx.sampleRate : 0; },
     command: command
   };
@@ -720,6 +794,7 @@
     if (d.__timbreCfg) api.apply(d.__timbreCfg);
     else if (d.__timbreIR) api.setIR(d.__timbreIR.id, d.__timbreIR.b64);
     else if (d.__timbreReport) api.report();
+    else if (d.__timbreDiagnose) diagnose();
     // add-on bridge delivers commands to the top frame by message; WebKit calls command() directly
     else if (d.__timbreCmd && (window !== window.top || boot.bridge)) command(d.__timbreCmd);
   });

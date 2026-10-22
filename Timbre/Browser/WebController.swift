@@ -70,6 +70,7 @@ final class WebController: NSObject, ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var progress: Double = 0
     @Published private(set) var status = EngineStatus()
+    @Published private(set) var diagnosticReport = "Play a track, then tap Refresh to inspect playback."
     @Published var popup: PopupItem?
 
     let webView: WKWebView
@@ -189,6 +190,87 @@ final class WebController: NSObject, ObservableObject {
         webView.evaluateJavaScript("window.__timbre&&window.__timbre.setIR(\(idJSON),'\(base64)');", completionHandler: nil)
     }
 
+    // MARK: passive playback diagnostics
+
+    private var diagnosticFrames: [String: String] = [:]
+
+    func requestPlaybackDiagnostic() {
+        diagnosticFrames.removeAll()
+        updateDiagnosticReport()
+        // Reports from the main frame and all reachable embedded frames.
+        webView.evaluateJavaScript("window.__timbre && window.__timbre.diagnose();", completionHandler: nil)
+    }
+
+    private func updateDiagnosticReport() {
+        var lines = [
+            "Page: \(webView.url?.host ?? "no page loaded")",
+            "Timbre status: \(status.label)",
+            "Note: lack of DRM signals does not prove a stream is unprotected.",
+            "MediaError codes: 1=aborted, 2=network, 3=decode, 4=unsupported.",
+            ""
+        ]
+        if diagnosticFrames.isEmpty {
+            lines.append("No frame reports yet. Start playback and tap Refresh.")
+        } else {
+            for key in diagnosticFrames.keys.sorted() {
+                if let report = diagnosticFrames[key] { lines.append(report) }
+            }
+        }
+        diagnosticReport = lines.joined(separator: "\n")
+    }
+
+    private func readPlaybackDiagnostic(_ body: [String: Any], isMain: Bool) {
+        func int(_ name: String) -> Int { (body[name] as? NSNumber)?.intValue ?? 0 }
+        func str(_ name: String) -> String { body[name] as? String ?? "unknown" }
+        func flag(_ name: String) -> String { (body[name] as? Bool ?? false) ? "yes" : "no" }
+        let host = str("frame")
+        let id = str("frameID")
+        let key = (isMain ? "0" : "1") + ":" + host + ":" + id
+        let drmEvidence = int("encryptedEvents") + int("needKeyEvents") + int("keyedElements")
+        let drm = drmEvidence > 0 ? "Signals detected" : "No signals observed (inconclusive)"
+        let reason: String
+        if (body["disabled"] as? Bool ?? false) || !(body["enabled"] as? Bool ?? true) {
+            reason = "Timbre EQ is currently bypassed."
+        } else if drmEvidence > 0 {
+            reason = "Encrypted playback was observed; Web Audio access may be restricted."
+        } else if int("attachFailures") > 0 {
+            reason = "MediaElementSource attachment failed; see the error below."
+        } else if str("engineState") == "silent" {
+            reason = "Playback advanced but Web Audio output was silent. Cause is not proven."
+        } else if int("corsCandidates") > 0 {
+            reason = "Cross-origin media lacks CORS mode; Web Audio may silence it."
+        } else if str("kinds").contains("blob") {
+            reason = "Blob/MSE playback observed; WebKit may not expose this source."
+        } else if int("attached") > 0 {
+            reason = "Web Audio source attached; this does not prove audible EQ."
+        } else if int("mediaCount") == 0 {
+            reason = "No HTML media elements visible in this frame."
+        } else {
+            reason = "No clear restriction detected yet."
+        }
+        let text = """
+
+        \(isMain ? "MAIN FRAME" : "EMBEDDED FRAME") - \(host)
+        Media elements: \(int("mediaCount")); playing: \(int("playing"))
+        Source types: \(str("kinds"))
+        Assessment: \(reason)
+        DRM: \(drm)
+        Encrypted/key events: \(int("encryptedEvents"))/\(int("needKeyEvents"))
+        Media with keys: \(int("keyedElements"))
+        Possible CORS issues: \(int("corsCandidates"))
+        CORS retries/failures: \(int("corsRetries"))/\(int("corsFailures"))
+        Media errors: \(int("mediaErrorEvents")); codes: \(str("mediaErrorCodes"))
+        Web Audio source: \(int("attached")) attached; \(int("attachAttempts")) attempts; \(int("attachFailures")) failures
+        Attachment error: \(str("attachError"))
+        Engine: \(str("engineState")); detail: \(str("engineDetail"))
+        AudioContext: \(str("audioContext")); available: \(flag("hasWebAudio"))
+        MediaSource available: \(flag("hasMSE")); compatibility: \(flag("compatibility"))
+        EQ enabled: \(flag("enabled")); site disabled: \(flag("disabled"))
+        """
+        diagnosticFrames[key] = text
+        updateDiagnosticReport()
+    }
+
     // MARK: navigation
 
     func load(_ input: String) {
@@ -254,6 +336,8 @@ extension WebController: WKScriptMessageHandler {
         let id = body["id"] as? String
         do {
             switch type {
+            case "playbackDiagnostic":
+                readPlaybackDiagnostic(body, isMain: isMain)
             case "spectrum":
                 if let bins = bins { self.onSpectrum?(bins) }
             case "status":
@@ -293,7 +377,9 @@ extension WebController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard webView === self.webView else { return }
         frameStates.removeAll()
+        diagnosticFrames.removeAll()
         recomputeStatus()
+        updateDiagnosticReport()
         onPageChanged?()
     }
 

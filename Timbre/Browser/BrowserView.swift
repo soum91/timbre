@@ -41,6 +41,7 @@ private struct BrowserContent: View {
     @FocusState private var addressFocused: Bool
     @State private var showHome = false
     @State private var quickEQ = false
+    @State private var showDiagnostics = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -72,6 +73,33 @@ private struct BrowserContent: View {
             }
         }
         .sheet(isPresented: $quickEQ) { QuickEQSheet() }
+        .sheet(isPresented: $showDiagnostics) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Play an Amazon Music track, then tap Refresh after a few seconds. This report only collects playback metadata and never includes song URLs or account credentials.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text(web.diagnosticReport)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding()
+                }
+                .background(Theme.bg)
+                .navigationTitle("Playback Diagnostics")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Done") { showDiagnostics = false }
+                    }
+                    ToolbarItemGroup(placement: .navigationBarTrailing) {
+                        Button("Refresh") { web.requestPlaybackDiagnostic() }
+                        Button("Copy") { UIPasteboard.general.string = web.diagnosticReport }
+                    }
+                }
+            }
+        }
         .onChange(of: web.url) { u in if !addressFocused { address = u?.absoluteString ?? "" } }
     }
 
@@ -144,6 +172,9 @@ private struct BrowserContent: View {
             Button { withAnimation { showHome.toggle() } } label: { Image(systemName: showHome ? "xmark.square" : "square.grid.2x2") }
                 .frame(maxWidth: .infinity)
             Menu {
+                Button { web.requestPlaybackDiagnostic(); showDiagnostics = true } label: {
+                    Label("Playback Diagnostics", systemImage: "waveform.path.ecg")
+                }
                 Toggle(isOn: $model.desktopMode) { Label("Desktop site", systemImage: "desktopcomputer") }
                 if model.currentHost != nil {
                     Button { model.toggleCurrentSite() } label: {
