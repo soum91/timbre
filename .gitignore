@@ -2,6 +2,7 @@ Timbre.xcodeproj/
 build/
 Payload/
 *.ipa
+.timbre-signing/
 .DS_Store
 xcuserdata/
 addon/engine.js

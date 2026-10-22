@@ -33,14 +33,24 @@ jobs:
         id: signing-cache
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
+          path: .timbre-signing/timbre-tv-debug.keystore
           key: timbre-tv-android-debug-signing-v1
+      - name: Provision stable experimental signing certificate
+        run: |
+          mkdir -p .timbre-signing
+          if [ ! -f .timbre-signing/timbre-tv-debug.keystore ]; then
+            keytool -genkeypair -noprompt \
+              -keystore .timbre-signing/timbre-tv-debug.keystore \
+              -storepass android -keypass android -alias timbre-tv-debug \
+              -keyalg RSA -keysize 3072 -validity 10000 \
+              -dname 'CN=Timbre TV Experimental, O=soum91'
+          fi
       - name: Build Android TV debug APK
         working-directory: android-tv
         run: gradle --no-daemon :app:assembleDebug
       - name: Report APK signing certificate fingerprint
         run: |
-          test -f "$HOME/.android/debug.keystore"
+          test -f .timbre-signing/timbre-tv-debug.keystore
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs android-tv/app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v4
         with:
