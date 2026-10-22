@@ -1,0 +1,16 @@
+Package: com.soum91.timbreaudio
+Version: 0.10.0
+Architecture: iphoneos-arm64
+Maintainer: soum91
+Installed-Size: 2152
+Depends: ellekit
+Filename: debs/com.soum91.timbreaudio_0.10.0_iphoneos-arm64.deb
+Size: 365414
+MD5sum: e40ba96c058e4c390e163781b6b2b3f4
+SHA1: abad077a5402d68cbe8f9d8d6501293f8c4ea3d4
+SHA256: 9c827f9b2073f1d5ab6163c6ee671741dcc9b084f2cd648ebadc2646560f1877
+Section: Tweaks
+Description: Experimental system EQ (16 parametric bands) with spatial, reverb, crossfeed, compressor and limiter; EQE-style Timbre controller. Device route not verified
+Author: soum91
+Name: Timbre Audio (Experimental)
+

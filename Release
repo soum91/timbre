@@ -1,0 +1,12 @@
+Origin: Timbre
+Label: Timbre Rootless
+Suite: stable
+Codename: ios
+Version: 1.0
+Architectures: iphoneos-arm64
+Components: main
+Description: Experimental Timbre packages for Dopamine rootless
+Date: Thu, 22 Oct 2026 01:56:30 +0000
+SHA256:
+ 043d878a24e5ad917bb00d7be77b2e9469bd7da68d2f7dd546ac097b6346e548 608 Packages
+ 4bf02d26f74ecc5048af2f21c70d06ca9beb3860db56889cd2c53b5afe6a234f 438 Packages.gz
