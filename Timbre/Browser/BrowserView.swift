@@ -42,6 +42,7 @@ private struct BrowserContent: View {
     @State private var showHome = false
     @State private var quickEQ = false
     @State private var showDiagnostics = false
+    @StateObject private var replayProbe = ReplayAudioProbe()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -83,6 +84,20 @@ private struct BrowserContent: View {
                             .font(.system(.footnote, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                        Text("Native audio capture (experimental)")
+                            .font(.headline)
+                        Text("ReplayKit may show an iOS screen-recording consent prompt. The test inspects app-audio signal levels for 6 seconds. No audio, video, or keys are saved.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button(replayProbe.isRunning ? "Stop capture" : "Test ReplayKit app audio") {
+                            if replayProbe.isRunning { replayProbe.stop() }
+                            else { replayProbe.start() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Text(replayProbe.report)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding()
                 }
@@ -95,7 +110,9 @@ private struct BrowserContent: View {
                     }
                     ToolbarItemGroup(placement: .navigationBarTrailing) {
                         Button("Refresh") { web.requestPlaybackDiagnostic() }
-                        Button("Copy") { UIPasteboard.general.string = web.diagnosticReport }
+                        Button("Copy") {
+                            UIPasteboard.general.string = web.diagnosticReport + "\n\nReplayKit native probe: " + replayProbe.report
+                        }
                     }
                 }
             }

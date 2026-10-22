@@ -852,8 +852,8 @@
         return false;
       }
 
-      var analyser, timer, finished = false;
-      var maxPeak = 0, checks = 0;
+      var analyser, controlAnalyser, timer, finished = false;
+      var maxPeak = 0, controlPeak = 0, checks = 0;
       var initialTime = media.currentTime;
 
       function finish(message) {
@@ -876,9 +876,13 @@
         // Provide an inaudible source so WebKit has an active render graph.
         // Start and resume synchronously from the user's button tap.
         var oscillator = probeContext.createOscillator();
+        controlAnalyser = probeContext.createAnalyser();
+        controlAnalyser.fftSize = 2048;
         var mute = probeContext.createGain();
         mute.gain.value = 0;
-        oscillator.connect(mute);
+        oscillator.frequency.value = 440;
+        oscillator.connect(controlAnalyser);
+        controlAnalyser.connect(mute);
         mute.connect(probeContext.destination);
         oscillator.start();
 
@@ -894,14 +898,17 @@
       }
 
       var samples = new Float32Array(analyser.fftSize);
+      var controlSamples = new Float32Array(controlAnalyser.fftSize);
       timer = setInterval(function () {
         if (finished) return;
         checks++;
 
         if (probeContext.state === 'running') {
           analyser.getFloatTimeDomainData(samples);
+          controlAnalyser.getFloatTimeDomainData(controlSamples);
           for (var i = 0; i < samples.length; i++) {
             maxPeak = Math.max(maxPeak, Math.abs(samples[i]));
+            controlPeak = Math.max(controlPeak, Math.abs(controlSamples[i]));
           }
         }
 
@@ -909,12 +916,15 @@
           var advancing = media.currentTime > initialTime + 0.5;
           if (probeContext.state !== 'running') {
             finish('AudioContext ' + probeContext.state + '; inconclusive.');
+          } else if (controlPeak < 0.0001) {
+            finish('Reference oscillator silent. Probe inconclusive.');
           } else if (maxPeak > 0.00001) {
-            finish('NONZERO AUDIO SAMPLES. Peak=' + maxPeak.toFixed(5));
+            finish('Media audio ACCESSIBLE. Peak=' + maxPeak.toFixed(5));
           } else if (advancing) {
-            finish('SILENCE while track advances. Audio inaccessible.');
+            finish('Reference OK; media SILENT. DRM=' + (isEncrypted(media) ? 'yes' : 'no') +
+              ', CORS risk=' + (corsBlocked(media) ? 'yes' : 'no') + '.');
           } else {
-            finish('Playback not advancing; inconclusive.');
+            finish('Reference OK; playback not advancing. Inconclusive.');
           }
         }
       }, 100);
