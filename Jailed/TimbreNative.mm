@@ -190,6 +190,8 @@ static OSStatus setCallback(AUGraph graph,AUNode node,UInt32 bus,const AURenderC
     os_unfair_lock_unlock(&registryLock);return result;
 }
 static OSStatus startGraph(AUGraph graph) {
+    Boolean running=false;
+    if(AUGraphIsRunning(graph,&running)==noErr&&running)return realStart?realStart(graph):kAudio_ParamError;
     os_unfair_lock_lock(&registryLock);
     for(int i=0;i<used.load();i++)if(streams[i].graph==graph)refreshFormat(streams[i]);
     os_unfair_lock_unlock(&registryLock);
@@ -233,7 +235,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)index {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];NSInteger s=index.section,r=index.row;
     if(s==0){
-        if(r==0){cell.textLabel.text=hookedImages.load()?@"Audio engine hook installed":@"Waiting for native audio engine";cell.detailTextLabel.text=[NSString stringWithFormat:@"Registrations: %llu · callbacks: %llu",(unsigned long long)registrations.load(),(unsigned long long)callbacks.load()];}
+        if(r==0){cell.textLabel.text=hookedImages.load()?@"Native audio engine detected":@"Waiting for native audio engine";cell.detailTextLabel.text=[NSString stringWithFormat:@"Registrations: %llu · callbacks: %llu",(unsigned long long)registrations.load(),(unsigned long long)callbacks.load()];}
         if(r==1){cell.textLabel.text=[NSString stringWithFormat:@"Processed frames: %llu",(unsigned long long)processed.load()];cell.detailTextLabel.text=[NSString stringWithFormat:@"%.0f Hz · skipped: %llu · format reason: %d",observedRate.load(),(unsigned long long)rejected.load(),lastReject.load()];}
         if(r==2){cell.textLabel.text=@"Run -12 dB attenuation test";cell.textLabel.textColor=UIColor.systemBlueColor;cell.detailTextLabel.text=@"Enables Timbre with a clearly audible preamp cut";}
     } else if(s==1&&r==0){cell.textLabel.text=@"Enable Timbre";UISwitch *sw=[UISwitch new];sw.on=settings.on.load();sw.tag=100;[sw addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=sw;}
