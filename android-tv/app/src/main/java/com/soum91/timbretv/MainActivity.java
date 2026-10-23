@@ -1,6 +1,7 @@
 package com.soum91.timbretv;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -11,9 +12,11 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -41,6 +44,7 @@ public final class MainActivity extends Activity {
     private LinearLayout page;
     private TextView status;
     private Button power;
+    private Button bypassButton;
     private int selectedTab = 0;
     private CurveView curve;
 
@@ -55,6 +59,11 @@ public final class MainActivity extends Activity {
                 status.setText(EqSettings.preferences(MainActivity.this)
                         .getString(EqSettings.STATUS,
                                 "Not running. Start the EQ and play audio to check sessions."));
+            }
+            if (bypassButton != null) {
+                boolean bypass = EqSettings.preferences(MainActivity.this)
+                        .getBoolean(EqSettings.BYPASS, false);
+                bypassButton.setText(bypass ? "A/B TEST: BYPASSED" : "A/B TEST: EQ ON");
             }
             handler.postDelayed(this, 2000);
         }
@@ -130,6 +139,19 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2);
         statusParams.topMargin = dp(7);
         diagnostics.addView(status, statusParams);
+        bypassButton = button("A/B TEST: EQ ON");
+        LinearLayout.LayoutParams bypassParams = new LinearLayout.LayoutParams(dp(260), dp(50));
+        bypassParams.topMargin = dp(12);
+        diagnostics.addView(bypassButton, bypassParams);
+        bypassButton.setOnClickListener(v -> {
+            boolean previous = EqSettings.preferences(this).getBoolean(EqSettings.BYPASS, false);
+            EqSettings.preferences(this).edit().putBoolean(EqSettings.BYPASS, !previous).apply();
+            bypassButton.setText(previous ? "A/B TEST: EQ ON" : "A/B TEST: BYPASSED");
+            applyToService();
+        });
+        diagnostics.addView(text("Listen for a difference when switching EQ on/off. "
+                + "A successful engine readback is not proof that Dolby or other protected "
+                + "audio passes through it.", 13, MUTED, false));
         TextView nativeStatus = text(NativeDsp.isReady()
                 ? "NATIVE DSP  ·  Original 16-band C++ engine linked and self-tested (offline PCM only)"
                 : "NATIVE DSP  ·  Not available on this Android build",
@@ -233,10 +255,10 @@ public final class MainActivity extends Activity {
         graphParams.rightMargin = dp(14);
         body.addView(graphCard, graphParams);
         graphCard.addView(text("RESPONSE CURVE", 13, GOLD, true));
-        graphCard.addView(text("Interpolated gain at Android's fixed EQ bands",
+        graphCard.addView(text("Custom control points mapped to Android's fixed EQ bands",
                 13, MUTED, false));
         curve = new CurveView();
-        curve.setGains(EqSettings.readGains(this));
+        curve.setCurve(EqSettings.readCurve(this));
         LinearLayout.LayoutParams curveParams =
                 new LinearLayout.LayoutParams(-1, 0, 1f);
         curveParams.topMargin = dp(14);
@@ -244,25 +266,50 @@ public final class MainActivity extends Activity {
 
         LinearLayout controls = card();
         body.addView(controls, new LinearLayout.LayoutParams(0, dp(435), 1f));
-        controls.addView(text("BAND LEVELS", 13, GOLD, true));
-        int[] values = EqSettings.readGains(this);
-        for (int i = 0; i < EqSettings.FREQUENCIES.length; i++) {
+        LinearLayout bandHeader = row();
+        bandHeader.setGravity(Gravity.CENTER_VERTICAL);
+        controls.addView(bandHeader);
+        bandHeader.addView(text("CONTROL POINTS", 13, GOLD, true),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        Button add = button("+ ADD BAND");
+        bandHeader.addView(add, new LinearLayout.LayoutParams(dp(150), dp(46)));
+        add.setOnClickListener(v -> promptAddBand());
+        ScrollView bandsScroll = new ScrollView(this);
+        bandsScroll.setFillViewport(false);
+        controls.addView(bandsScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        LinearLayout bands = column();
+        bandsScroll.addView(bands);
+        EqSettings.Curve selectedCurve = EqSettings.readCurve(this);
+        for (int i = 0; i < selectedCurve.frequencies.length; i++) {
             final int index = i;
             LinearLayout line = row();
             line.setGravity(Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams lineParams = new LinearLayout.LayoutParams(-1, -2);
             lineParams.topMargin = dp(13);
-            controls.addView(line, lineParams);
+            bands.addView(line, lineParams);
 
-            TextView label = text(frequencyLabel(EqSettings.FREQUENCIES[i]),
+            TextView label = text(frequencyLabel(selectedCurve.frequencies[i]),
                     16, TEXT, true);
             line.addView(label, new LinearLayout.LayoutParams(0, -2, 1f));
-            TextView amount = text(gainLabel(values[i]), 16, GOLD, true);
+            TextView amount = text(gainLabel(selectedCurve.gains[i]), 16, GOLD, true);
             line.addView(amount);
+            Button remove = button("×");
+            LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(48), dp(42));
+            removeParams.leftMargin = dp(7);
+            line.addView(remove, removeParams);
+            remove.setContentDescription("Remove " + frequencyLabel(selectedCurve.frequencies[i]));
+            remove.setOnClickListener(v -> {
+                if (EqSettings.removeBand(this, index)) {
+                    applyToService();
+                    selectTab(0);
+                } else {
+                    Toast.makeText(this, "Keep at least two EQ points", Toast.LENGTH_SHORT).show();
+                }
+            });
 
             SeekBar seekBar = new SeekBar(this);
             seekBar.setMax(24);
-            seekBar.setProgress(values[i] + 12);
+            seekBar.setProgress(selectedCurve.gains[i] + 12);
             seekBar.setProgressTintList(android.content.res.ColorStateList.valueOf(GOLD));
             seekBar.setThumbTintList(android.content.res.ColorStateList.valueOf(TEXT));
             seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -271,7 +318,7 @@ public final class MainActivity extends Activity {
                     amount.setText(gainLabel(gain));
                     if (user) {
                         EqSettings.saveGain(MainActivity.this, index, gain);
-                        if (curve != null) curve.setGains(EqSettings.readGains(MainActivity.this));
+                        if (curve != null) curve.setCurve(EqSettings.readCurve(MainActivity.this));
                         applyToService();
                     }
                 }
@@ -279,8 +326,36 @@ public final class MainActivity extends Activity {
                 @Override public void onStopTrackingTouch(SeekBar bar) {}
             });
             LinearLayout.LayoutParams sliderParams = new LinearLayout.LayoutParams(-1, dp(28));
-            controls.addView(seekBar, sliderParams);
+            bands.addView(seekBar, sliderParams);
         }
+
+        LinearLayout gainCard = card();
+        LinearLayout.LayoutParams gainParams = new LinearLayout.LayoutParams(-1, -2);
+        gainParams.topMargin = dp(13);
+        page.addView(gainCard, gainParams);
+        int globalGain = EqSettings.preferences(this).getInt(EqSettings.GLOBAL_GAIN, 0);
+        TextView gainTitle = text("MASTER GAIN  " + gainLabel(globalGain), 16, GOLD, true);
+        gainCard.addView(gainTitle);
+        SeekBar gainSlider = new SeekBar(this);
+        gainSlider.setMax(24);
+        gainSlider.setProgress(globalGain + 12);
+        gainSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean user) {
+                int db = progress - 12;
+                gainTitle.setText("MASTER GAIN  " + gainLabel(db));
+                if (user) {
+                    EqSettings.preferences(MainActivity.this).edit()
+                            .putInt(EqSettings.GLOBAL_GAIN, db).apply();
+                    applyToService();
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) {}
+            @Override public void onStopTrackingTouch(SeekBar bar) {}
+        });
+        gainCard.addView(gainSlider);
+        gainCard.addView(text("Android DynamicsProcessing input gain where supported. "
+                + "If unavailable, Timbre reports an EQ-band offset fallback. "
+                + "Positive gain may clip.", 13, MUTED, false));
 
         LinearLayout footer = row();
         LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(54));
@@ -288,7 +363,8 @@ public final class MainActivity extends Activity {
         page.addView(footer, footerParams);
         Button flat = button("Reset curve");
         flat.setOnClickListener(v -> {
-            setCurve(new int[]{0, 0, 0, 0, 0});
+            EqSettings.applyPreset(this, new int[]{0, 0, 0, 0, 0});
+            applyToService();
             selectTab(0);
         });
         footer.addView(flat, new LinearLayout.LayoutParams(dp(190), -1));
@@ -323,8 +399,25 @@ public final class MainActivity extends Activity {
                 "Add definition in the upper bands.");
         presetRow("Late Night Loudness", new int[]{2, 1, 3, 1, -2},
                 "A fixed tonal profile, not a dynamics compressor.");
-        int[] custom = EqSettings.readCustomPreset(this);
-        if (custom != null) presetRow("My curve", custom, "Your last saved five-band settings.");
+        EqSettings.Curve custom = EqSettings.readCustomPreset(this);
+        if (custom != null) {
+            LinearLayout customCard = row();
+            customCard.setGravity(Gravity.CENTER_VERTICAL);
+            customCard.setBackground(panelBackground(PANEL, BORDER));
+            customCard.setPadding(dp(18), dp(8), dp(14), dp(8));
+            LinearLayout.LayoutParams customParams = new LinearLayout.LayoutParams(-1, dp(75));
+            customParams.topMargin = dp(11);
+            page.addView(customCard, customParams);
+            customCard.addView(text("My curve (" + custom.frequencies.length + " points)",
+                    20, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1f));
+            Button restore = button("RESTORE");
+            customCard.addView(restore, new LinearLayout.LayoutParams(dp(140), dp(46)));
+            restore.setOnClickListener(v -> {
+                EqSettings.saveCurve(this, custom);
+                applyToService();
+                selectTab(0);
+            });
+        }
         else {
             LinearLayout c = card();
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
@@ -351,10 +444,39 @@ public final class MainActivity extends Activity {
         Button apply = button("APPLY");
         c.addView(apply, new LinearLayout.LayoutParams(dp(140), dp(46)));
         apply.setOnClickListener(v -> {
-            setCurve(gains);
+            EqSettings.applyPreset(this, gains);
+            applyToService();
             selectTab(0);
             Toast.makeText(this, "Applied " + name, Toast.LENGTH_SHORT).show();
         });
+    }
+
+    private void promptAddBand() {
+        EditText frequency = new EditText(this);
+        frequency.setSingleLine(true);
+        frequency.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        frequency.setHint("e.g. 125, 500, 3000");
+        LinearLayout wrapper = column();
+        wrapper.setPadding(dp(22), 0, dp(22), 0);
+        wrapper.addView(frequency);
+        new AlertDialog.Builder(this)
+                .setTitle("Add frequency point (20 - 20000 Hz)")
+                .setView(wrapper)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Add", (dialog, which) -> {
+                    try {
+                        float hz = Float.parseFloat(frequency.getText().toString().trim());
+                        if (!EqSettings.addBand(this, hz)) {
+                            Toast.makeText(this, "Invalid, duplicate, or 128-point limit",
+                                    Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        applyToService();
+                        selectTab(0);
+                    } catch (NumberFormatException e) {
+                        Toast.makeText(this, "Enter a frequency in Hz", Toast.LENGTH_LONG).show();
+                    }
+                }).show();
     }
 
     private void showUnavailable(String title, String subtitle, String explanation) {
@@ -378,11 +500,6 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams n = new LinearLayout.LayoutParams(-1, -2);
         n.topMargin = dp(18);
         p.addView(note, n);
-    }
-
-    private void setCurve(int[] gains) {
-        EqSettings.saveGains(this, gains);
-        applyToService();
     }
 
     private void applyToService() {
@@ -469,12 +586,13 @@ public final class MainActivity extends Activity {
 
     private final class CurveView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private int[] gains = {0, 0, 0, 0, 0};
+        private EqSettings.Curve current = new EqSettings.Curve(
+                EqSettings.DEFAULT_FREQUENCIES, new int[]{0, 0, 0, 0, 0});
 
         CurveView() { super(MainActivity.this); }
 
-        void setGains(int[] values) {
-            gains = values.clone();
+        void setCurve(EqSettings.Curve values) {
+            current = values;
             invalidate();
         }
 
@@ -510,7 +628,7 @@ public final class MainActivity extends Activity {
             float zero = top + height / 2f;
             for (int px = (int) left; px <= (int) right; px += 2) {
                 float f = (float) (20 * Math.pow(1000, (px - left) / (right - left)));
-                float gain = EqSettings.gainAt(f, gains);
+                float gain = EqSettings.gainAt(f, current);
                 float y = top + (12f - gain) / 24f * height;
                 if (first) {
                     line.moveTo(px, y);
@@ -532,9 +650,9 @@ public final class MainActivity extends Activity {
             paint.setColor(GOLD);
             canvas.drawPath(line, paint);
             paint.setStyle(Paint.Style.FILL);
-            for (int i = 0; i < ticks.length; i++) {
-                float x = xFor(ticks[i], left, right);
-                float y = top + (12f - gains[i]) / 24f * height;
+            for (int i = 0; i < current.frequencies.length; i++) {
+                float x = xFor(current.frequencies[i], left, right);
+                float y = top + (12f - current.gains[i]) / 24f * height;
                 paint.setColor(PANEL);
                 canvas.drawCircle(x, y, dp(7), paint);
                 paint.setColor(GOLD);

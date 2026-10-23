@@ -3,7 +3,9 @@ package com.soum91.timbretv;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -15,6 +17,7 @@ final class SessionMonitor {
 
     static final class Result {
         final Set<Integer> sessions = new HashSet<>();
+        final Map<Integer, Integer> uidBySession = new HashMap<>();
         String error;
     }
 
@@ -49,6 +52,7 @@ final class SessionMonitor {
 
             boolean active = false;
             int currentSession = 0;
+            int currentUid = -1;
             for (String line : output.toString().split("\\n")) {
                 if (line.contains("AudioTrack active (stream) clients:")) {
                     active = true;
@@ -56,12 +60,19 @@ final class SessionMonitor {
                 }
                 if (!active) continue;
                 if (line.contains("Inputs dump:")) break;
-                if (line.trim().startsWith("Client ")) currentSession = 0;
+                if (line.trim().startsWith("Client ")) {
+                    currentSession = 0;
+                    currentUid = -1;
+                }
                 Matcher matcher = SESSION.matcher(line);
-                if (matcher.find()) currentSession = Integer.parseInt(matcher.group(1));
+                if (matcher.find()) {
+                    currentSession = Integer.parseInt(matcher.group(1));
+                    currentUid = Integer.parseInt(matcher.group(2));
+                }
                 if (currentSession > 0 && (line.contains("Usage: AUDIO_USAGE_MEDIA")
                         || line.contains("Usage: AUDIO_USAGE_GAME"))) {
                     result.sessions.add(currentSession);
+                    if (currentUid >= 0) result.uidBySession.put(currentSession, currentUid);
                     currentSession = 0;
                 }
             }

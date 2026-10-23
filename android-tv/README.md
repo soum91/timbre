@@ -62,12 +62,12 @@ determines which players and routes can be processed.
    **Global mix: ON** to try session 0 without a `DUMP` grant. Press
    **Start EQ**. A foreground notification keeps the session monitor
    active; press **Stop Timbre TV** when finished.
-5. Start YouTube or Netflix and check the playback status. In global mode,
-   confirm that it reports effect control and `enabled: true`; this alone
-   does not prove that playback is being equalized. In per-player mode,
-   confirm that a session was detected. Adjust a band by an obvious amount
-   and listen for a change. If the session never appears, `dumpsys` may not
-   be callable by the app on this firmware.
+5. Start YouTube or Netflix and check **Playback Status** for the detected
+   player, session ID, EQ ownership, enabled state, and hardware band readback.
+   Use **A/B TEST: EQ ON / BYPASSED** while playing a familiar passage.
+   A verified hardware parameter readback does not itself prove the audible
+   audio route traverses the effect; listen for a clear A/B difference.
+   If the session never appears, `dumpsys` may not be callable by the app.
 6. Independently verify the **actual incoming audio format on the Vizio
    Elevate P514a-H6** during the test. EQ audibility alone cannot prove that
    HDMI eARC is still carrying E-AC3.
@@ -76,7 +76,16 @@ determines which players and routes can be processed.
 
 - Native Google TV home launcher icon and 320x180 banner.
 - Dark/amber remote-first tabs styled after the original Timbre tweak.
-- EQ curve visualization reflecting five genuinely editable system EQ bands.
+- Add and remove up to 128 frequency control points from 20 Hz to 20 kHz.
+  Additional points are **interpolated onto the fixed physical EQ bands**.
+  They do not increase the number of hardware filters or introduce adjustable Q.
+- A scrollable band editor, responsive EQ curve, and a master gain slider.
+- Player detection by AudioPolicy session/UID (when DUMP works) or cooperative
+  Android audio-effect broadcasts. The package label is shown when accessible.
+- Master gain uses Android DynamicsProcessing input gain where supported and
+  falls back to a band-level offset if that effect cannot be controlled.
+- Live diagnostics showing effect ownership, enabled state, band-level readback,
+  fallback/clamping information, and an audible A/B bypass toggle.
 - One-button switch between individually tracked player sessions and the
   experimental Android global output mix. Modes are mutually exclusive.
 - Working Flat, Bass Boost, V-Shape, Vocal Presence, Treble Boost and
@@ -101,7 +110,7 @@ and the native bridge does not decode or encode Dolby Digital Plus or Atmos.
 
 ## Current limitations
 
-- Five user gain points are interpolated onto the TV's native fixed EQ bands.
+- User-defined gain points are interpolated onto the TV's native fixed EQ bands.
   This does **not** preserve Timbre's 16 parametric filters, selectable filter
   types, center frequencies or Q values, or the compressor/spatial effects.
   A true drop-in custom DSP hook would require OEM/system audio-effect
