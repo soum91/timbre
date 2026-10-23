@@ -93,8 +93,9 @@ def package(source, library, output):
     with zipfile.ZipFile(output) as out:
         if out.testzip():
             raise ValueError('ZIP integrity check failed')
-        parsed = list(commands(out.read(exe)))
-        assert any(c == 0xC and b'TimbreNative.dylib' in out.read(exe)[o:o+s] for c,o,s in parsed)
+        packaged_executable = out.read(exe)
+        parsed = list(commands(packaged_executable))
+        assert any(c == 0xC and b'TimbreNative.dylib' in packaged_executable[o:o+s] for c,o,s in parsed)
         assert out.read(root+'Frameworks/TimbreNative.dylib') == lib
     return {'output': str(Path(output).resolve()), 'bytes': Path(output).stat().st_size, 'build': plist['CFBundleVersion'], 'signing_required': True}
 
