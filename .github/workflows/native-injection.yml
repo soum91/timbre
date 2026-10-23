@@ -1,0 +1,43 @@
+name: Build app-local Timbre DSP
+on:
+  push:
+    branches: [amazon-native-eq-test]
+    paths: ['Jailed/**', 'NativeDSP/**', '.github/workflows/native-injection.yml']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native DSP
+        run: |
+          clang++ -std=c++17 -O2 NativeDSP/TimbreDSP.cpp NativeDSP/tests/test.cpp -framework Accelerate -o /tmp/timbre-dsp-tests
+          /tmp/timbre-dsp-tests
+      - name: Build iPhone library
+        run: |
+          mkdir -p native-build
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -c Jailed/fishhook.c -o native-build/fishhook.o
+          xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -std=c++17 -fobjc-arc -O2 -dynamiclib Jailed/TimbreNative.mm NativeDSP/TimbreDSP.cpp native-build/fishhook.o -framework UIKit -framework Foundation -framework AVFoundation -framework AudioToolbox -framework Accelerate -install_name @rpath/TimbreNative.dylib -o native-build/TimbreNative.dylib
+          codesign --force --sign - native-build/TimbreNative.dylib
+          codesign --verify --strict native-build/TimbreNative.dylib
+          otool -L native-build/TimbreNative.dylib
+      - name: Upload library
+        uses: actions/upload-artifact@v4
+        with:
+          name: TimbreNative-Test1
+          path: native-build/TimbreNative.dylib
+          if-no-files-found: error
+      - name: Make compiled library retrievable
+        run: |
+          python3 - <<'PY'
+          import base64, pathlib
+          p=pathlib.Path('native-build/TimbreNative.dylib')
+          pathlib.Path('native-build/TimbreNative.dylib.b64').write_text(base64.b64encode(p.read_bytes()).decode())
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add native-build/TimbreNative.dylib.b64
+          git commit -m 'Store compiled app-local Timbre test library'
+          git push origin HEAD:amazon-native-eq-test
