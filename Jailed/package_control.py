@@ -37,7 +37,7 @@ def package(source, output):
         d['CFBundleName'] = 'Amazon Control'
         d['CFBundleVersion'] = '26.37.3'
         d['TimbreControlBuild'] = True
-        for key in ['WKCompanionAppBundleIdentifier', 'WKWatchKitApp', 'NSExtension']:
+        for key in ['UISupportedDevices', 'WKCompanionAppBundleIdentifier', 'WKWatchKitApp', 'NSExtension']:
             d.pop(key, None)
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as out:

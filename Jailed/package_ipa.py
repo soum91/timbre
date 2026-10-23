@@ -76,12 +76,14 @@ def package(source, library, output):
         modified = inject(original.read(exe))
         # Use a stable standalone identity. This avoids attempting to replace an
         # installed/offloaded App Store app signed by a different developer team.
-        plist['CFBundleIdentifier'] = 'com.soum91.amazonmusic.timbre'
+        plist['CFBundleIdentifier'] = 'app.cancer9725.turquoise1323'
         plist['CFBundleDisplayName'] = 'Amazon Timbre'
         plist['CFBundleName'] = 'Amazon Timbre'
-        plist['CFBundleVersion'] = '26.37.2'
-        plist['TimbreNativeTestBuild'] = 2
-        for key in ['WKCompanionAppBundleIdentifier', 'WKWatchKitApp', 'NSExtension']:
+        plist['CFBundleVersion'] = '26.37.4'
+        plist['TimbreNativeTestBuild'] = 3
+        # App Store thinning can leave a device whitelist from the source phone.
+        # Keep architectural/minimum OS requirements, but remove that whitelist.
+        for key in ['UISupportedDevices', 'WKCompanionAppBundleIdentifier', 'WKWatchKitApp', 'NSExtension']:
             plist.pop(key, None)
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as out:
@@ -108,8 +110,9 @@ def package(source, library, output):
         assert out.read(root+'Frameworks/TimbreNative.dylib') == lib
         assert not any('.appex/' in n or '/com.apple.WatchPlaceholder/' in n for n in out.namelist())
         verified = plistlib.loads(out.read(info))
-        assert verified['CFBundleIdentifier'] == 'com.soum91.amazonmusic.timbre'
-        assert verified['CFBundleVersion'] == '26.37.2'
+        assert verified['CFBundleIdentifier'] == 'app.cancer9725.turquoise1323'
+        assert verified['CFBundleVersion'] == '26.37.4'
+        assert 'UISupportedDevices' not in verified
     return {'output': str(Path(output).resolve()), 'bytes': Path(output).stat().st_size, 'build': plist['CFBundleVersion'], 'bundle_id': plist['CFBundleIdentifier'], 'signing_required': True}
 
 
