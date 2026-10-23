@@ -175,18 +175,25 @@ static OSStatus setCallback(AUGraph graph,AUNode node,UInt32 bus,const AURenderC
     if(!realSet)return kAudio_ParamError;
     if(!cb||!cb->inputProc||cb->inputProc==render)return realSet(graph,node,bus,cb);
     os_unfair_lock_lock(&registryLock);
-    // Register each graph/node once. Re-registration bypasses safely until the graph is disposed.
+    // Reuse stopped or disposed graphs, so changing tracks does not exhaust the pool.
+    // An active graph's producer is never rewritten under its render thread.
     Stream *slot=nullptr;
-    for(int i=0;i<used.load();i++)if(streams[i].graph==graph&&streams[i].node==node&&streams[i].bus==bus){os_unfair_lock_unlock(&registryLock);return realSet(graph,node,bus,cb);}
-    if(used.load()<MaxStreams)slot=&streams[used.fetch_add(1)];
+    for(int i=0;i<used.load();i++)if(streams[i].graph==graph&&streams[i].node==node&&streams[i].bus==bus){
+        Boolean running=true;
+        if(AUGraphIsRunning(graph,&running)!=noErr||running){os_unfair_lock_unlock(&registryLock);return realSet(graph,node,bus,cb);}
+        slot=&streams[i];break;
+    }
+    if(!slot)for(int i=0;i<used.load();i++)if(!streams[i].graph){slot=&streams[i];break;}
+    if(!slot&&used.load()<MaxStreams)slot=&streams[used.fetch_add(1)];
     if(!slot){os_unfair_lock_unlock(&registryLock);return realSet(graph,node,bus,cb);}
+    slot->ready=false;slot->effectsReady=false;slot->generation=0;
     slot->graph=graph;slot->node=node;slot->bus=bus;slot->source=*cb;
-    try {slot->effects=std::make_unique<timbre::Effects>();}catch(...){}
+    try {if(!slot->effects)slot->effects=std::make_unique<timbre::Effects>();}catch(...){}
     refreshFormat(*slot);
     AURenderCallbackStruct replacement{render,slot};
     OSStatus result=realSet(graph,node,bus,&replacement);
     if(result==noErr)registrations.fetch_add(1);
-    else slot->ready=false;
+    else {slot->ready=false;slot->graph=nullptr;}
     os_unfair_lock_unlock(&registryLock);return result;
 }
 static OSStatus startGraph(AUGraph graph) {
