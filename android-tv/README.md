@@ -28,6 +28,32 @@ audio mixer or re-encode Dolby Digital Plus. No root is required for the
 supported session-based effect API, but Sony/Android firmware behavior still
 determines which players and routes can be processed.
 
+### Soundbar-side processing
+
+The **Soundbar** tab also provides a separate path for Vizio Elevate controls,
+following the local SmartCast menu API used by the `soum91/subwave` project.
+Enter the soundbar's **private IPv4 address** on the same LAN, select
+**Connect / Refresh**, and browse the audio settings that its firmware
+actually reports. Available EQ modes, bass/treble, surround, height, and
+other settings are device-dependent. Timbre fetches valid sliders and choices
+from the soundbar, performs a fresh HASHVAL read before each write, and
+reads the value back afterward. Only audio settings are exposed; reset and
+factory actions are not offered.
+
+This adjusts the **soundbar itself, downstream of its HDMI decoder**. It does
+not intercept, decode, modify, re-encode, or manufacture the TV's Dolby Atmos
+bitstream. The TV can continue to send untouched E-AC3-JOC over ARC/eARC
+when the source, subscription, TV settings, and hardware allow it. A successful
+SmartCast setting readback does not prove Atmos is being received. Verify the
+bar's displayed input format independently.
+
+The local SmartCast endpoint uses a self-signed HTTPS certificate, so Timbre
+relaxes certificate validation **only for the connection to the manually
+entered private LAN address on port 7345 or 9000**. Use this on a trusted LAN;
+this exception does not affect any other app or system HTTPS connections.
+No account or app-wide cleartext traffic is enabled. The integration is
+implemented but **not yet hardware-verified on the P514a-H6**.
+
 ## Install and test
 
 1. Download the debug APK from the **Android TV APK (experimental)** GitHub
@@ -96,6 +122,8 @@ determines which players and routes can be processed.
   Late Night Loudness tonal presets, plus one locally saved My curve.
 - Separate Spatial, Reverb and Dynamics pages document unavailable processing.
   No dummy switch pretends to activate an unsupported audio engine.
+- A Soundbar tab reads and edits the Vizio's own SmartCast audio settings over
+  the local network; it is independent of the TV's session EQ and HDMI codec.
 
 ## Native DSP integration
 

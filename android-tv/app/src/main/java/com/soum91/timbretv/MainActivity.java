@@ -23,7 +23,28 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 
 /**
  * Ten-foot Timbre UI. Its EQ and preset controls are connected to the session
@@ -37,9 +58,12 @@ public final class MainActivity extends Activity {
     private static final int MUTED = Color.rgb(179, 176, 171);
     private static final int GOLD = Color.rgb(255, 181, 65);
     private static final int DARK_GOLD = Color.rgb(75, 56, 30);
-    private static final String[] TABS = {"EQ", "Spatial", "Reverb", "Dynamics", "Presets"};
+    private static final String[] TABS = {"EQ", "Spatial", "Reverb", "Dynamics", "Presets", "Soundbar"};
+    private static final String BAR_HOST_KEY = "soundbar_host";
+    private static final String BAR_ROOT = "/menu_native/dynamic/audio_settings";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService barWorker = Executors.newSingleThreadExecutor();
     private final Button[] tabButtons = new Button[TABS.length];
     private LinearLayout page;
     private TextView status;
@@ -47,6 +71,13 @@ public final class MainActivity extends Activity {
     private Button bypassButton;
     private int selectedTab = 0;
     private CurveView curve;
+    private String barHost = "";
+    private int barPort = 0;
+    private String barPath;
+    private String barTitle = "Audio settings";
+    private String barMessage = "Enter your Vizio soundbar's LAN IP, then connect.";
+    private List<BarItem> barItems = Collections.emptyList();
+    private boolean barBusy = false;
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
@@ -71,6 +102,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        barHost = EqSettings.preferences(this).getString(BAR_HOST_KEY, "");
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         ScrollView scroll = new ScrollView(this);
@@ -176,6 +208,11 @@ public final class MainActivity extends Activity {
         super.onStop();
     }
 
+    @Override public void onDestroy() {
+        barWorker.shutdownNow();
+        super.onDestroy();
+    }
+
     private void selectTab(int tab) {
         selectedTab = tab;
         for (int i = 0; i < tabButtons.length; i++) {
@@ -203,6 +240,7 @@ public final class MainActivity extends Activity {
                             + "Threshold, ratio, knee, attack, release and makeup "
                             + "will only become adjustable after that integration works."); break;
             case 4: showPresets(); break;
+            case 5: showSoundbar(); break;
             default: break;
         }
     }
@@ -458,6 +496,476 @@ public final class MainActivity extends Activity {
             c.addView(text("MY CURVE", 13, GOLD, true));
             c.addView(text("Save your adjusted EQ from the EQ tab to add a personal preset.",
                     15, MUTED, false));
+        }
+    }
+
+    /**
+     * Soundbar EQ works after the bar decodes its incoming HDMI signal. This
+     * deliberately does not alter the TV's Atmos/E-AC3 output or claim to do so.
+     * The settings browser follows the soundbar's own SmartCast audio menu,
+     * following the approach in soum91/subwave rather than guessing EQ paths.
+     */
+    private void showSoundbar() {
+        page.addView(text("Vizio Elevate", 26, TEXT, true));
+        page.addView(text("Native soundbar processing  ·  Dolby Atmos passthrough stays untouched",
+                14, GOLD, true));
+
+        LinearLayout connect = card();
+        LinearLayout.LayoutParams connectParams = new LinearLayout.LayoutParams(-1, -2);
+        connectParams.topMargin = dp(13);
+        page.addView(connect, connectParams);
+        connect.addView(text("SMARTCAST LAN CONNECTION", 13, GOLD, true));
+        connect.addView(text("Use the same Wi-Fi/LAN as your soundbar. Enter the bar's private IPv4 "
+                + "address, not the Sony TV's address.", 14, MUTED, false));
+
+        LinearLayout entry = row();
+        entry.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams entryParams = new LinearLayout.LayoutParams(-1, -2);
+        entryParams.topMargin = dp(12);
+        connect.addView(entry, entryParams);
+        EditText address = new EditText(this);
+        address.setSingleLine(true);
+        address.setTextColor(TEXT);
+        address.setHintTextColor(MUTED);
+        address.setHint("192.168.1.100");
+        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        address.setText(barHost);
+        address.setContentDescription("Soundbar LAN IPv4 address");
+        entry.addView(address, new LinearLayout.LayoutParams(0, dp(55), 1f));
+
+        Button discover = button(barBusy ? "CONNECTING..." : "CONNECT / REFRESH");
+        discover.setEnabled(!barBusy);
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(dp(245), dp(52));
+        buttonParams.leftMargin = dp(12);
+        entry.addView(discover, buttonParams);
+        discover.setOnClickListener(v -> {
+            String host = address.getText().toString().trim();
+            if (!isPrivateIPv4(host)) {
+                Toast.makeText(this, "Enter a private LAN IPv4 (10.x, 172.16-31.x, "
+                        + "or 192.168.x)", Toast.LENGTH_LONG).show();
+                return;
+            }
+            boolean newHost = !host.equals(barHost);
+            barHost = host;
+            EqSettings.preferences(this).edit().putString(BAR_HOST_KEY, host).apply();
+            if (newHost) {
+                barPort = 0;
+                barPath = null;
+                barItems = Collections.emptyList();
+            }
+            connectToBar();
+        });
+        connect.addView(text("Uses the bar's HTTPS SmartCast API (ports 7345/9000). "
+                + "No cloud account or HDMI audio interception is required.",
+                12, MUTED, false));
+
+        LinearLayout settings = card();
+        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(-1, -2);
+        settingsParams.topMargin = dp(13);
+        page.addView(settings, settingsParams);
+        settings.addView(text("SOUNDBAR RESPONSE", 13, GOLD, true));
+        settings.addView(text(barMessage, 15, barMessage.startsWith("Error") ? GOLD : TEXT, false));
+        if (barPort > 0) {
+            settings.addView(text("Connected over HTTPS port " + barPort
+                    + "  ·  Controls verified only by device readback", 12, MUTED, false));
+        }
+        if (barPath == null) {
+            settings.addView(text("Once connected, Timbre will show the controls the "
+                    + "soundbar actually exposes: EQ mode, bass, treble, surrounds, "
+                    + "height and other audio settings where available.",
+                    14, MUTED, false));
+            return;
+        }
+
+        LinearLayout menuHeader = row();
+        menuHeader.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(-1, -2);
+        headerParams.topMargin = dp(13);
+        page.addView(menuHeader, headerParams);
+        Button back = button("◀  UP");
+        back.setEnabled(!barBusy && !BAR_ROOT.equals(barPath));
+        menuHeader.addView(back, new LinearLayout.LayoutParams(dp(125), dp(49)));
+        back.setOnClickListener(v -> {
+            int slash = barPath.lastIndexOf('/');
+            if (slash < BAR_ROOT.length()) return;
+            String parent = barPath.substring(0, slash);
+            loadBarMenu(parent, "Audio settings");
+        });
+        TextView title = text(barTitle, 21, TEXT, true);
+        title.setPadding(dp(16), 0, 0, 0);
+        menuHeader.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        Button reload = button("RELOAD MENU");
+        reload.setEnabled(!barBusy);
+        menuHeader.addView(reload, new LinearLayout.LayoutParams(dp(195), dp(49)));
+        reload.setOnClickListener(v -> loadBarMenu(barPath, barTitle));
+
+        if (barItems.isEmpty()) {
+            page.addView(text("No settings returned in this menu.", 15, MUTED, false));
+        }
+        for (BarItem item : barItems) {
+            if (!item.hidden) addBarSetting(item);
+        }
+        page.addView(text("Changing these controls adjusts the soundbar's own decoder/output "
+                + "processing. It cannot force the TV or a streaming app to transmit Atmos. "
+                + "Check the soundbar's input-format indicator separately.",
+                13, MUTED, false));
+    }
+
+    private void addBarSetting(BarItem item) {
+        LinearLayout card = card();
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.topMargin = dp(9);
+        page.addView(card, params);
+        LinearLayout line = row();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        card.addView(line);
+        LinearLayout description = column();
+        line.addView(description, new LinearLayout.LayoutParams(0, -2, 1f));
+        description.addView(text(item.name, 18, TEXT, true));
+        if (!item.isMenu()) {
+            description.addView(text(item.displayValue() + (item.readOnly ? "  ·  READ ONLY" : ""),
+                    14, MUTED, false));
+        }
+        if (item.isMenu()) {
+            Button open = button("OPEN  ▶");
+            open.setEnabled(!barBusy);
+            line.addView(open, new LinearLayout.LayoutParams(dp(170), dp(48)));
+            open.setOnClickListener(v -> loadBarMenu(item.path, item.name));
+        } else if (!item.readOnly && item.choices.size() > 0) {
+            Button choose = button("CHANGE  ▾");
+            choose.setEnabled(!barBusy);
+            line.addView(choose, new LinearLayout.LayoutParams(dp(170), dp(48)));
+            choose.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setTitle(item.name)
+                    .setItems(item.choices.toArray(new String[0]), (dialog, selected) ->
+                            setBarValue(item, item.choices.get(selected)))
+                    .setNegativeButton("Cancel", null).show());
+        } else if (item.isSlider() && !item.readOnly) {
+            int min = item.min;
+            int max = item.max;
+            SeekBar slider = new SeekBar(this);
+            slider.setMax(max - min);
+            slider.setProgress(Math.min(max, Math.max(min, item.intValue())) - min);
+            slider.setProgressTintList(android.content.res.ColorStateList.valueOf(GOLD));
+            slider.setThumbTintList(android.content.res.ColorStateList.valueOf(TEXT));
+            slider.setEnabled(!barBusy);
+            slider.setContentDescription(item.name + " soundbar adjustment");
+            TextView value = text(item.displayValue(), 16, GOLD, true);
+            line.addView(value, new LinearLayout.LayoutParams(dp(100), -2));
+            slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seek, int progress, boolean user) {
+                    if (user) value.setText(String.valueOf(min + progress));
+                }
+                @Override public void onStartTrackingTouch(SeekBar seek) {}
+                @Override public void onStopTrackingTouch(SeekBar seek) {
+                    int newValue = min + seek.getProgress();
+                    if (newValue != item.intValue()) setBarValue(item, newValue);
+                }
+            });
+            card.addView(slider, new LinearLayout.LayoutParams(-1, dp(42)));
+        }
+    }
+
+    private interface BarJob { void run() throws Exception; }
+
+    private void runBarJob(BarJob job) {
+        if (barBusy) return;
+        barBusy = true;
+        if (selectedTab == 5) selectTab(5);
+        barWorker.execute(() -> {
+            try {
+                job.run();
+            } catch (Exception e) {
+                String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                barMessage = "Error: " + detail;
+            }
+            handler.post(() -> {
+                barBusy = false;
+                if (!isFinishing() && !isDestroyed() && selectedTab == 5) selectTab(5);
+            });
+        });
+    }
+
+    private void connectToBar() {
+        runBarJob(() -> {
+            BarClient client = null;
+            Exception last = null;
+            int[] ports = barPort > 0 ? new int[]{barPort, barPort == 7345 ? 9000 : 7345}
+                    : new int[]{7345, 9000};
+            for (int port : ports) {
+                try {
+                    BarClient candidate = new BarClient(barHost, port);
+                    candidate.request("GET", BAR_ROOT, null);
+                    client = candidate;
+                    barPort = port;
+                    break;
+                } catch (Exception e) { last = e; }
+            }
+            if (client == null) {
+                throw new IOException("Soundbar unavailable on HTTPS 7345/9000. "
+                        + "Check its LAN IP/Wi-Fi. "
+                        + (last == null ? "" : last.getMessage()));
+            }
+            List<BarItem> root = client.menu(BAR_ROOT);
+            String audioPath = BAR_ROOT;
+            for (BarItem it : root) {
+                if (it.isMenu() && (it.cname.equalsIgnoreCase("audio")
+                        || (it.cname + it.name).toLowerCase(Locale.US).contains("audio"))) {
+                    audioPath = it.path;
+                    break;
+                }
+            }
+            barItems = client.menu(audioPath);
+            barPath = audioPath;
+            barTitle = "Audio settings";
+            barMessage = "Connected. " + barItems.size()
+                    + " settings received from the soundbar.";
+        });
+    }
+
+    private void loadBarMenu(String path, String title) {
+        runBarJob(() -> {
+            List<BarItem> found = new BarClient(barHost, barPort).menu(path);
+            barItems = found;
+            barPath = path;
+            barTitle = title;
+            barMessage = "Read " + found.size() + " settings from the soundbar.";
+        });
+    }
+
+    private void setBarValue(BarItem item, Object value) {
+        if (item.readOnly || item.isMenu()) return;
+        runBarJob(() -> {
+            BarClient client = new BarClient(barHost, barPort);
+            BarItem current = client.item(item);
+            if (current.hash == null) throw new IOException("No HASHVAL for " + item.name);
+            JSONObject body = new JSONObject();
+            body.put("REQUEST", "MODIFY");
+            body.put("HASHVAL", current.hash);
+            body.put("VALUE", value);
+            client.request("PUT", item.path, body);
+            BarItem confirmed = client.item(item);
+            List<BarItem> updated = client.menu(barPath);
+            barItems = updated;
+            barMessage = item.name + ": device readback " + confirmed.displayValue()
+                    + ". This verifies the bar's setting, not the HDMI codec.";
+        });
+    }
+
+    private static boolean isPrivateIPv4(String host) {
+        String[] parts = host.split("\\.", -1);
+        if (parts.length != 4) return false;
+        int[] nums = new int[4];
+        try {
+            for (int i = 0; i < 4; i++) {
+                if (parts[i].isEmpty() || parts[i].length() > 3) return false;
+                for (int j = 0; j < parts[i].length(); j++) {
+                    char digit = parts[i].charAt(j);
+                    if (digit < '0' || digit > '9') return false;
+                }
+                nums[i] = Integer.parseInt(parts[i]);
+                if (nums[i] < 0 || nums[i] > 255) return false;
+            }
+        } catch (NumberFormatException e) { return false; }
+        return nums[0] == 10 || nums[0] == 192 && nums[1] == 168
+                || nums[0] == 172 && nums[1] >= 16 && nums[1] <= 31;
+    }
+
+    private static Object ci(JSONObject object, String key) {
+        if (object == null) return null;
+        Object value = object.opt(key);
+        if (value == null) value = object.opt(key.toUpperCase(Locale.US));
+        if (value == null) {
+            java.util.Iterator<String> keys = object.keys();
+            while (keys.hasNext()) {
+                String candidate = keys.next();
+                if (candidate.equalsIgnoreCase(key)) return object.opt(candidate);
+            }
+        }
+        return value == JSONObject.NULL ? null : value;
+    }
+
+    private static String string(Object value) {
+        return value == null || value == JSONObject.NULL ? "" : String.valueOf(value);
+    }
+
+    private static Integer integer(Object value) {
+        if (value instanceof Number) return ((Number) value).intValue();
+        try { return value == null ? null : Integer.parseInt(string(value)); }
+        catch (NumberFormatException e) { return null; }
+    }
+
+    private static final class BarItem {
+        final String cname;
+        final String name;
+        final String type;
+        final String path;
+        final Object value;
+        Integer hash;
+        Integer min;
+        Integer max;
+        boolean readOnly;
+        boolean hidden;
+        final List<String> choices = new ArrayList<>();
+
+        BarItem(JSONObject source, String parent) {
+            cname = string(ci(source, "cname"));
+            name = string(ci(source, "name")).isEmpty() ? cname : string(ci(source, "name"));
+            type = string(ci(source, "type")).toLowerCase(Locale.US);
+            path = parent + "/" + cname;
+            Object raw = ci(source, "value");
+            value = raw instanceof JSONObject ? ci((JSONObject) raw, "name") : raw;
+            hash = integer(ci(source, "hashval"));
+            min = integer(ci(source, "minimum"));
+            max = integer(ci(source, "maximum"));
+            readOnly = Boolean.parseBoolean(string(ci(source, "readonly")));
+            hidden = Boolean.parseBoolean(string(ci(source, "hidden")));
+            JSONArray elements = ci(source, "elements") instanceof JSONArray
+                    ? (JSONArray) ci(source, "elements") : null;
+            if (elements != null) {
+                for (int i = 0; i < elements.length(); i++) {
+                    String choice = string(elements.opt(i));
+                    if (!choice.isEmpty()) choices.add(choice);
+                }
+            }
+        }
+
+        boolean isMenu() { return type.equals("t_menu_v1") || type.equals("t_audio_menu_v1"); }
+        boolean isSlider() {
+            return min != null && max != null && max > min && max - min <= 1000
+                    && integer(value) != null;
+        }
+        int intValue() { Integer v = integer(value); return v == null ? (min == null ? 0 : min) : v; }
+        String displayValue() { return string(value).isEmpty() ? "Unavailable" : string(value); }
+    }
+
+    /**
+     * SmartCast exposes a self-signed HTTPS endpoint on the user's local bar.
+     * Certificate relaxation is applied only to a connection to an explicitly
+     * entered RFC1918 IPv4 host, never to the app or system TLS defaults.
+     */
+    private static final class BarClient {
+        private final String host;
+        private final int port;
+        private final javax.net.ssl.SSLSocketFactory localTls;
+
+        BarClient(String address, int soundbarPort) throws Exception {
+            if (!isPrivateIPv4(address)) throw new IOException("Only private LAN IPv4 allowed");
+            if (soundbarPort != 7345 && soundbarPort != 9000) {
+                throw new IOException("Unsupported SmartCast port");
+            }
+            host = address;
+            port = soundbarPort;
+            X509TrustManager trust = new X509TrustManager() {
+                @Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+                @Override public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+                @Override public X509Certificate[] getAcceptedIssuers() {
+                    return new X509Certificate[0];
+                }
+            };
+            SSLContext ssl = SSLContext.getInstance("TLS");
+            ssl.init(null, new TrustManager[]{trust}, new SecureRandom());
+            localTls = ssl.getSocketFactory();
+        }
+
+        JSONObject request(String method, String path, JSONObject body) throws Exception {
+            if (!path.startsWith(BAR_ROOT) && !path.startsWith(
+                    BAR_ROOT.replace("/dynamic/", "/static/"))) {
+                throw new IOException("SmartCast request outside audio settings");
+            }
+            HttpsURLConnection connection = (HttpsURLConnection) new URL(
+                    "https://" + host + ":" + port + path).openConnection();
+            connection.setSSLSocketFactory(localTls);
+            connection.setHostnameVerifier((serverName, session) -> host.equals(serverName));
+            connection.setConnectTimeout(3500);
+            connection.setReadTimeout(4500);
+            connection.setUseCaches(false);
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("Accept", "application/json");
+            try {
+                if (body != null) {
+                    connection.setDoOutput(true);
+                    connection.setRequestProperty("Content-Type", "application/json");
+                    byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+                    try (OutputStream output = connection.getOutputStream()) {
+                        output.write(bytes);
+                    }
+                }
+                int code = connection.getResponseCode();
+                InputStream response = code >= 400
+                        ? connection.getErrorStream() : connection.getInputStream();
+                if (response == null) throw new IOException("Soundbar HTTP " + code);
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                try (InputStream input = response) {
+                    byte[] chunk = new byte[4096];
+                    int n;
+                    while ((n = input.read(chunk)) != -1) buffer.write(chunk, 0, n);
+                    if (buffer.size() > 1024 * 1024) throw new IOException("Oversized SmartCast response");
+                }
+                JSONObject result = new JSONObject(new String(
+                        buffer.toByteArray(), StandardCharsets.UTF_8));
+                JSONObject status = ci(result, "status") instanceof JSONObject
+                        ? (JSONObject) ci(result, "status") : null;
+                String outcome = string(ci(status, "result"));
+                if (code >= 400 || !"success".equalsIgnoreCase(outcome)) {
+                    String detail = string(ci(status, "detail"));
+                    if (code == 403 || outcome.toLowerCase(Locale.US).contains("pair")) {
+                        throw new IOException("Bar requires SmartCast pairing (HTTP " + code + ")");
+                    }
+                    throw new IOException("Bar rejected " + method + " (HTTP " + code
+                            + "): " + (detail.isEmpty() ? outcome : detail));
+                }
+                return result;
+            } finally {
+                connection.disconnect();
+            }
+        }
+
+        List<BarItem> menu(String path) throws Exception {
+            List<BarItem> found = parseMenu(request("GET", path, null), path);
+            String staticPath = path.replace("/dynamic/", "/static/");
+            try {
+                List<BarItem> options = parseMenu(request("GET", staticPath, null), staticPath);
+                for (BarItem item : found) {
+                    for (BarItem option : options) {
+                        if (item.cname.equals(option.cname)) {
+                            if (item.min == null) item.min = option.min;
+                            if (item.max == null) item.max = option.max;
+                            if (item.choices.isEmpty()) item.choices.addAll(option.choices);
+                            break;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // Older firmware exposes only the dynamic menu. Readable settings
+                // still appear, but missing range/choice metadata stays read-only.
+            }
+            return found;
+        }
+
+        BarItem item(BarItem requested) throws Exception {
+            List<BarItem> values = parseMenu(request("GET", requested.path, null),
+                    requested.path.substring(0, requested.path.lastIndexOf('/')));
+            for (BarItem value : values) {
+                if (value.cname.equals(requested.cname)) return value;
+            }
+            if (!values.isEmpty()) return values.get(0);
+            throw new IOException("Missing soundbar setting " + requested.name);
+        }
+
+        private static List<BarItem> parseMenu(JSONObject response, String parent) {
+            JSONArray array = ci(response, "items") instanceof JSONArray
+                    ? (JSONArray) ci(response, "items") : null;
+            List<BarItem> items = new ArrayList<>();
+            if (array == null) return items;
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject raw = array.optJSONObject(i);
+                if (raw == null) continue;
+                BarItem item = new BarItem(raw, parent);
+                // CNAME is supplied by the bar and becomes a URL path segment.
+                if (item.cname.matches("[a-zA-Z0-9_-]+")) items.add(item);
+            }
+            return items;
         }
     }
 

@@ -4,6 +4,7 @@
     <!-- Development permission. ADB must grant this after installation. -->
     <uses-permission android:name="android.permission.DUMP" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
