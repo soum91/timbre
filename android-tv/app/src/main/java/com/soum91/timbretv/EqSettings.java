@@ -145,7 +145,7 @@ final class EqSettings {
         JSONArray array = new JSONArray();
         for (int i = 0; i < curve.frequencies.length; i++) {
             JSONArray point = new JSONArray();
-            point.put(curve.frequencies[i]);
+            point.put((Object) Float.valueOf(curve.frequencies[i]));
             point.put(clamp(curve.gains[i]));
             array.put(point);
         }
