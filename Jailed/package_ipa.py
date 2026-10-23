@@ -74,14 +74,23 @@ def package(source, library, output):
             raise ValueError('This test adapter is only for Amazon Music')
         exe = root + plist['CFBundleExecutable']
         modified = inject(original.read(exe))
-        plist['CFBundleDisplayName'] = 'Amazon Music + Timbre'
-        build = plist['CFBundleVersion'].split('.')
-        build[-1] = str(int(build[-1])+1)
-        plist['CFBundleVersion'] = '.'.join(build)
-        plist['TimbreNativeTestBuild'] = 1
+        # Use a stable standalone identity. This avoids attempting to replace an
+        # installed/offloaded App Store app signed by a different developer team.
+        plist['CFBundleIdentifier'] = 'com.soum91.amazonmusic.timbre'
+        plist['CFBundleDisplayName'] = 'Amazon Timbre'
+        plist['CFBundleName'] = 'Amazon Timbre'
+        plist['CFBundleVersion'] = '26.37.2'
+        plist['TimbreNativeTestBuild'] = 2
+        for key in ['WKCompanionAppBundleIdentifier', 'WKWatchKitApp', 'NSExtension']:
+            plist.pop(key, None)
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as out:
             for entry in original.infolist():
+                # This first iPhone test needs no notification or Watch extension.
+                # Removing these also removes nested provisioning requirements
+                # and avoids parent/extension version and identity mismatches.
+                if any(entry.filename.startswith(root+prefix) for prefix in ['PlugIns/', 'Watch/', 'com.apple.WatchPlaceholder/', 'AppClips/']):
+                    continue
                 if '/_CodeSignature/' in entry.filename or '/SC_Info/' in entry.filename or entry.filename.endswith('embedded.mobileprovision'):
                     continue
                 content = modified if entry.filename == exe else plistlib.dumps(plist) if entry.filename == info else original.read(entry)
@@ -97,7 +106,11 @@ def package(source, library, output):
         parsed = list(commands(packaged_executable))
         assert any(c == 0xC and b'TimbreNative.dylib' in packaged_executable[o:o+s] for c,o,s in parsed)
         assert out.read(root+'Frameworks/TimbreNative.dylib') == lib
-    return {'output': str(Path(output).resolve()), 'bytes': Path(output).stat().st_size, 'build': plist['CFBundleVersion'], 'signing_required': True}
+        assert not any('.appex/' in n or '/com.apple.WatchPlaceholder/' in n for n in out.namelist())
+        verified = plistlib.loads(out.read(info))
+        assert verified['CFBundleIdentifier'] == 'com.soum91.amazonmusic.timbre'
+        assert verified['CFBundleVersion'] == '26.37.2'
+    return {'output': str(Path(output).resolve()), 'bytes': Path(output).stat().st_size, 'build': plist['CFBundleVersion'], 'bundle_id': plist['CFBundleIdentifier'], 'signing_required': True}
 
 
 if __name__ == '__main__':
