@@ -255,7 +255,7 @@ public final class MainActivity extends Activity {
         graphParams.rightMargin = dp(14);
         body.addView(graphCard, graphParams);
         graphCard.addView(text("RESPONSE CURVE", 13, GOLD, true));
-        graphCard.addView(text("Custom control points mapped to Android's fixed EQ bands",
+        graphCard.addView(text("Gain + Q-shaped points sampled onto Android's fixed EQ bands",
                 13, MUTED, false));
         curve = new CurveView();
         curve.setCurve(EqSettings.readCurve(this));
@@ -327,7 +327,39 @@ public final class MainActivity extends Activity {
             });
             LinearLayout.LayoutParams sliderParams = new LinearLayout.LayoutParams(-1, dp(28));
             bands.addView(seekBar, sliderParams);
+
+            TextView qLabel = text(String.format(Locale.US, "BAND WIDTH  ·  Q %.1f",
+                    selectedCurve.qValues[i]), 13, MUTED, true);
+            LinearLayout.LayoutParams qLabelParams = new LinearLayout.LayoutParams(-1, -2);
+            qLabelParams.topMargin = dp(2);
+            bands.addView(qLabel, qLabelParams);
+            SeekBar qSlider = new SeekBar(this);
+            qSlider.setMax(Math.round((EqSettings.MAX_Q - EqSettings.MIN_Q) * 10));
+            qSlider.setProgress(Math.round((selectedCurve.qValues[i] - EqSettings.MIN_Q) * 10));
+            qSlider.setProgressTintList(android.content.res.ColorStateList.valueOf(GOLD));
+            qSlider.setThumbTintList(android.content.res.ColorStateList.valueOf(TEXT));
+            qSlider.setContentDescription("Q width for "
+                    + frequencyLabel(selectedCurve.frequencies[i]));
+            qSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar bar, int progress, boolean user) {
+                    float q = EqSettings.MIN_Q + progress / 10f;
+                    qLabel.setText(String.format(Locale.US, "BAND WIDTH  ·  Q %.1f", q));
+                    if (user) {
+                        EqSettings.saveQ(MainActivity.this, index, q);
+                        if (curve != null) curve.setCurve(EqSettings.readCurve(MainActivity.this));
+                        applyToService();
+                    }
+                }
+                @Override public void onStartTrackingTouch(SeekBar bar) {}
+                @Override public void onStopTrackingTouch(SeekBar bar) {}
+            });
+            bands.addView(qSlider, new LinearLayout.LayoutParams(-1, dp(28)));
         }
+
+        bands.addView(text("Q 1.0 preserves the previous curve. Higher Q narrows a point's "
+                + "influence between adjacent points; lower Q broadens it. The TV EQ "
+                + "samples that shape onto fixed hardware bands, so this is NOT a true "
+                + "parametric Q filter.", 12, MUTED, false));
 
         LinearLayout gainCard = card();
         LinearLayout.LayoutParams gainParams = new LinearLayout.LayoutParams(-1, -2);

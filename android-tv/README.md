@@ -78,7 +78,11 @@ determines which players and routes can be processed.
 - Dark/amber remote-first tabs styled after the original Timbre tweak.
 - Add and remove up to 128 frequency control points from 20 Hz to 20 kHz.
   Additional points are **interpolated onto the fixed physical EQ bands**.
-  They do not increase the number of hardware filters or introduce adjustable Q.
+  Each point now has an adjustable Q-width control (0.3 to 10.0). Q=1.0
+  reproduces the earlier log-linear curve; higher Q narrows the point's
+  contribution between adjacent frequencies, and lower Q broadens it.
+  These shapes are sampled onto the built-in EQ bands, **not** true hardware
+  parametric filters with independently adjustable Q.
 - A scrollable band editor, responsive EQ curve, and a master gain slider.
 - Player detection by AudioPolicy session/UID (when DUMP works) or cooperative
   Android audio-effect broadcasts. The package label is shown when accessible.
@@ -111,8 +115,9 @@ and the native bridge does not decode or encode Dolby Digital Plus or Atmos.
 ## Current limitations
 
 - User-defined gain points are interpolated onto the TV's native fixed EQ bands.
-  This does **not** preserve Timbre's 16 parametric filters, selectable filter
-  types, center frequencies or Q values, or the compressor/spatial effects.
+  Q-width editing approximates curve shape between user points but does **not**
+  give hardware filters independent Q. It does not preserve Timbre's 16 true
+  parametric filters, selectable filter types, compressor or spatial effects.
   A true drop-in custom DSP hook would require OEM/system audio-effect
   integration, which an unrooted Android TV does not expose to ordinary APKs.
 - Protected/direct Dolby Digital Plus and Atmos tracks can bypass PCM effects.

@@ -124,6 +124,7 @@ public final class TimbreService extends Service {
                 : "A/B TEST: EQ ON (effects requested)");
         status.append("\nPlayer detected: ").append(active.size())
                 .append("; control points: ").append(curve.frequencies.length);
+        status.append("\nBand Q: approximate curve shaping only (hardware Q fixed)");
         if (scan.error != null) status.append("\n").append(scan.error);
 
         synchronized (effects) {
