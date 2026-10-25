@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.24",
+          "buildVersion": "24",
+          "date": "2026-10-25T13:41:48Z",
+          "localizedDescription": "- Keep DSP controller available for background control intents (771364f)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-24/Timbre-1.0-build-24.ipa",
+          "size": 948817,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.23",
           "buildVersion": "23",
           "date": "2026-10-25T13:35:57Z",
@@ -128,11 +137,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.23",
-      "versionDate": "2026-10-25T13:35:57Z",
-      "versionDescription": "- Remove obsolete duplicate control source after gain-control rename (f8c9a7f)\n- Fix unique Swift filename for gain control build (5c0baad)\n- Add EQ, spatial, reverb, preset and gain controls (8d0a1b2)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-23/Timbre-1.0-build-23.ipa",
-      "size": 948371,
+      "version": "1.0.24",
+      "versionDate": "2026-10-25T13:41:48Z",
+      "versionDescription": "- Keep DSP controller available for background control intents (771364f)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-24/Timbre-1.0-build-24.ipa",
+      "size": 948817,
       "appPermissions": {}
     }
   ],
