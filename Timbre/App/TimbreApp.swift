@@ -3,7 +3,7 @@ import AVFoundation
 
 @main
 struct TimbreApp: App {
-    @StateObject private var model = AppModel()
+    @StateObject private var model = AppModel.shared
 
     init() {
         let s = AVAudioSession.sharedInstance()

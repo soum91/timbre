@@ -51,6 +51,9 @@ enum CommandBus {
     @MainActor static var handler: ((String) -> Void)?
 
     static func send(_ cmd: String) async {
+        #if !WIDGET_EXTENSION
+        await MainActor.run { _ = AppModel.shared }
+        #endif
         let handled: Bool = await MainActor.run {
             guard let h = handler else { return false }
             h(cmd)

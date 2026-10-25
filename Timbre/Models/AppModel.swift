@@ -103,7 +103,6 @@ final class AppModel: ObservableObject {
         Self.listenForWidgetCommands()
         syncNowPlayingEQ()
         drainPendingCommand()
-        AppModel.shared = self
         publishQuickControls()
     }
 
@@ -135,6 +134,8 @@ final class AppModel: ObservableObject {
             if cmd.hasPrefix("preset:"), let preset = presets.first(where: { $0.id == String(cmd.dropFirst(7)) }) { apply(preset) }
             else { web.command(cmd) }
         }
+        save(config, key: Keys.config)
+        publishQuickControls()
     }
 
     func drainPendingCommand() {
@@ -149,11 +150,11 @@ final class AppModel: ObservableObject {
 
     private static func listenForWidgetCommands() {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil, { _, _, _, _, _ in
-            Task { @MainActor in AppModel.shared?.drainPendingCommand() }
+            Task { @MainActor in AppModel.shared.drainPendingCommand() }
         }, SharedStore.darwinCommand as CFString, nil, .deliverImmediately)
     }
 
-    static weak var shared: AppModel?
+    static let shared = AppModel()
 
     func publishQuickControls() {
         TimbreQuickSnapshot(eq: config.enabled, spatial: config.spatial.on, reverb: config.reverb.on,
