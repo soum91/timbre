@@ -18,7 +18,7 @@ final class SpectrumModel: ObservableObject {
 @MainActor
 final class AppModel: ObservableObject {
     @Published var config: DSPConfig { didSet { if config != oldValue { configChanged() } } }
-    @Published var presets: [Preset] { didSet { save(presets, key: Keys.presets) } }
+    @Published var presets: [Preset] { didSet { save(presets, key: Keys.presets); publishQuickControls() } }
     @Published var activePresetName: String? {
         didSet {
             UserDefaults.standard.set(activePresetName, forKey: Keys.activeName)
@@ -104,6 +104,7 @@ final class AppModel: ObservableObject {
         syncNowPlayingEQ()
         drainPendingCommand()
         AppModel.shared = self
+        publishQuickControls()
     }
 
     // MARK: persistence
@@ -120,7 +121,20 @@ final class AppModel: ObservableObject {
     // MARK: widget / Live Activity commands
 
     func handleCommand(_ cmd: String) {
-        if cmd == "eq" { config.enabled.toggle() } else { web.command(cmd) }
+        switch cmd {
+        case "eq": config.enabled.toggle()
+        case "eq:on": config.enabled = true
+        case "eq:off": config.enabled = false
+        case "spatial:on": config.spatial.on = true
+        case "spatial:off": config.spatial.on = false
+        case "reverb:on": config.reverb.on = true
+        case "reverb:off": config.reverb.on = false
+        case "gain:up": config.output = min(12, config.output + 1)
+        case "gain:down": config.output = max(-60, config.output - 1)
+        default:
+            if cmd.hasPrefix("preset:"), let preset = presets.first(where: { $0.id == String(cmd.dropFirst(7)) }) { apply(preset) }
+            else { web.command(cmd) }
+        }
     }
 
     func drainPendingCommand() {
@@ -141,7 +155,13 @@ final class AppModel: ObservableObject {
 
     static weak var shared: AppModel?
 
+    func publishQuickControls() {
+        TimbreQuickSnapshot(eq: config.enabled, spatial: config.spatial.on, reverb: config.reverb.on,
+                            gain: config.output, presets: presets.map { .init(id: $0.id, name: $0.name) }).save()
+    }
+
     private func configChanged() {
+        publishQuickControls()
         syncNowPlayingEQ()
         // live push, throttled to ~30 Hz while dragging
         if !pushScheduled {

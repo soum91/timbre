@@ -10,6 +10,8 @@ private let panel = Color(red: 0.08, green: 0.085, blue: 0.10)
 @main
 struct TimbreWidgetBundle: WidgetBundle {
     var body: some Widget {
+        if #available(iOS 18.0, *) { TimbreEQControl(); TimbreSpatialControl(); TimbreReverbControl(); TimbrePresetControl(); TimbreGainUpControl(); TimbreGainDownControl() }
+
         NowPlayingWidget()
         TimbreLiveActivity()
     }
@@ -104,7 +106,7 @@ struct NowPlayingWidget: Widget {
         }
         .configurationDisplayName("Timbre")
         .description("What's playing, playback controls and the EQ switch.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular, .accessoryInline])
     }
 }
 
@@ -120,6 +122,12 @@ struct NowPlayingWidgetView: View {
 
     @ViewBuilder private var content: some View {
         switch family {
+        case .accessoryInline:
+            Text(s.eqOn ? "EQ · \(s.preset.isEmpty ? "Custom" : s.preset)" : "EQ bypassed")
+        case .accessoryCircular:
+            Button(intent: TimbreEQIntent()) {
+                ZStack { AccessoryWidgetBackground(); Image(systemName: s.eqOn ? "slider.vertical.3" : "power") }
+            }.buttonStyle(.plain)
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 2) {
                 Text(s.hasMedia ? s.title : "Timbre").font(.headline).lineLimit(1)
