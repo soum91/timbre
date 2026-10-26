@@ -280,10 +280,31 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 @interface TBLauncher : NSObject
 @property(nonatomic,strong) UIButton *button;
 @end
+
+static UIWindow *TBNativeWindow(void) {
+    UIApplication *app = UIApplication.sharedApplication;
+    UIWindow *fallback = nil;
+    for (UIWindow *candidate in app.windows) {
+        if (!candidate.hidden && candidate.alpha > 0.01 && candidate.rootViewController) {
+            if (!fallback) fallback = candidate;
+            if (candidate.isKeyWindow) return candidate;
+        }
+    }
+    for (UIScene *scene in app.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        if (scene.activationState == UISceneActivationStateUnattached || scene.activationState == UISceneActivationStateBackground) continue;
+        for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+            if (candidate.hidden || candidate.alpha <= 0.01 || !candidate.rootViewController) continue;
+            if (!fallback) fallback = candidate;
+            if (candidate.isKeyWindow) return candidate;
+        }
+    }
+    return fallback;
+}
+
 @implementation TBLauncher
 - (void)attach {
-    UIWindow *window=nil;
-    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes)if([scene isKindOfClass:UIWindowScene.class]&&scene.activationState==UISceneActivationStateForegroundActive)for(UIWindow *w in ((UIWindowScene *)scene).windows)if(w.isKeyWindow)window=w;
+    UIWindow *window=TBNativeWindow();
     if(!window||!window.rootViewController)return;
     if(!self.button){self.button=[UIButton buttonWithType:UIButtonTypeSystem];[self.button setTitle:@"Timbre" forState:UIControlStateNormal];self.button.backgroundColor=UIColor.systemIndigoColor;[self.button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.button.layer.cornerRadius=18;self.button.accessibilityLabel=@"Open Timbre equalizer";[self.button addTarget:self action:@selector(open) forControlEvents:UIControlEventTouchUpInside];}
     if(self.button.superview!=window)[window addSubview:self.button];
@@ -297,6 +318,6 @@ __attribute__((constructor)) static void launchTimbreNative() {
         loadSettings();
         realSet=&AUGraphSetNodeInputCallback;realStart=&AUGraphStart;realDispose=&DisposeAUGraph;
         _dyld_register_func_for_add_image(addedImage);
-        dispatch_async(dispatch_get_main_queue(),^{static TBLauncher *launcher=[TBLauncher new];[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer){[launcher attach];}];});
+        dispatch_async(dispatch_get_main_queue(),^{static TBLauncher *launcher=[TBLauncher new];[launcher attach];[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer){[launcher attach];}];});
     }
 }
