@@ -5,15 +5,30 @@
 @property(nonatomic, strong) UIButton *button;
 @end
 
-@implementation TBLoadCheck
-- (void)attach {
-    UIWindow *window = nil;
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
-        for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
-            if (candidate.isKeyWindow) window = candidate;
+static UIWindow *TBLoadCheckWindow(void) {
+    UIApplication *app = UIApplication.sharedApplication;
+    UIWindow *fallback = nil;
+    for (UIWindow *candidate in app.windows) {
+        if (!candidate.hidden && candidate.alpha > 0.01 && candidate.rootViewController) {
+            if (!fallback) fallback = candidate;
+            if (candidate.isKeyWindow) return candidate;
         }
     }
+    for (UIScene *scene in app.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        if (scene.activationState == UISceneActivationStateUnattached || scene.activationState == UISceneActivationStateBackground) continue;
+        for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+            if (candidate.hidden || candidate.alpha <= 0.01 || !candidate.rootViewController) continue;
+            if (!fallback) fallback = candidate;
+            if (candidate.isKeyWindow) return candidate;
+        }
+    }
+    return fallback;
+}
+
+@implementation TBLoadCheck
+- (void)attach {
+    UIWindow *window = TBLoadCheckWindow();
     if (!window || !window.rootViewController) return;
     if (!self.button) {
         self.button = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -40,6 +55,7 @@ __attribute__((constructor)) static void startLoadCheck(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         static TBLoadCheck *check;
         check = [TBLoadCheck new];
+        [check attach];
         [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
             [check attach];
         }];
