@@ -3,6 +3,7 @@ on:
   push:
     branches: [amazon-native-eq-test]
     paths: ['Jailed/**', 'NativeDSP/**', '.github/workflows/native-injection.yml']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -19,7 +20,7 @@ jobs:
           mkdir -p native-build
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -c Jailed/fishhook.c -o native-build/fishhook.o
-          xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -std=c++17 -fobjc-arc -O2 -dynamiclib Jailed/TimbreNative.mm NativeDSP/TimbreDSP.cpp native-build/fishhook.o -framework UIKit -framework Foundation -framework AVFoundation -framework AudioToolbox -framework Accelerate -install_name @rpath/TimbreNative-FlareStore.dylib -o native-build/TimbreNative-FlareStore.dylib
+          xcrun --sdk iphoneos clang++ -arch iphoneos -isysroot "$SDK" -miphoneos-version-min=16.0 -std=c++17 -fobjc-arc -O2 -dynamiclib Jailed/TimbreNative.mm NativeDSP/TimbreDSP.cpp native-build/fishhook.o -framework UIKit -framework Foundation -framework AVFoundation -framework AudioToolbox -framework Accelerate -install_name @rpath/TimbreNative-FlareStore.dylib -o native-build/TimbreNative-FlareStore.dylib
           codesign --force --sign - native-build/TimbreNative-FlareStore.dylib
           codesign --verify --strict native-build/TimbreNative-FlareStore.dylib
           otool -L native-build/TimbreNative-FlareStore.dylib
