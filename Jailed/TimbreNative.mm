@@ -15,8 +15,8 @@
 
 
 namespace {
-// Observe result codes and group names only. Never inspect keychain values,
-// account names, tokens, passwords, or returned items. Calls are unchanged.
+// Observe result codes and group names only. Retry the single confirmed denied
+// login namespace in this signed app\'s own default group. Never inspect values.
 using TBKCopy=OSStatus(*)(CFDictionaryRef,CFTypeRef *);
 using TBKAdd=OSStatus(*)(CFDictionaryRef,CFTypeRef *);
 using TBKUpdate=OSStatus(*)(CFDictionaryRef,CFDictionaryRef);
@@ -26,7 +26,39 @@ static TBKAdd tbAdd=nullptr;
 static TBKUpdate tbUpdate=nullptr;
 static TBKDelete tbDelete=nullptr;
 static os_unfair_lock tbKeyLock=OS_UNFAIR_LOCK_INIT;
-static uint64_t tbKeyCalls=0,tbKeyDenied=0;
+static uint64_t tbKeyCalls=0,tbKeyDenied=0,tbKeyRetries=0,tbKeyRetryOK=0;
+static NSString *tbPrivateGroup=nil;
+// Discover the default group granted to this signed app. The random, empty
+// probe is deleted immediately and contains no account or session information.
+static void tbDiscoverPrivateGroup() {
+    if(!tbAdd||!tbDelete)return;
+    NSString *service=[@"Timbre.KeychainProbe." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSDictionary *identity=@{@"class":@"genp",@"svce":service,@"acct":@"probe"};
+    NSMutableDictionary *q=[identity mutableCopy];
+    q[@"v_Data"]=[NSData data];q[@"r_Attributes"]=@YES;
+    CFTypeRef out=nullptr;
+    OSStatus status=tbAdd((__bridge CFDictionaryRef)q,&out);
+    if(status==0 && out && CFGetTypeID(out)==CFDictionaryGetTypeID()) {
+        id group=((__bridge NSDictionary *)out)[@"agrp"];
+        if([group isKindOfClass:NSString.class])tbPrivateGroup=[group copy];
+    }
+    if(out)CFRelease(out);
+    if(status==0)tbDelete((__bridge CFDictionaryRef)identity);
+}
+static NSDictionary *tbRetryQuery(CFDictionaryRef query,OSStatus result) {
+    if(result!=-34018||!tbPrivateGroup||!query)return nil;
+    NSDictionary *q=(__bridge NSDictionary *)query;
+    if(![q[@"agrp"] isEqual:@"J7P34ALZ5R.com.amazon.mp3.AmazonCloudPlayer"])return nil;
+    NSMutableDictionary *mapped=[q mutableCopy];mapped[@"agrp"]=tbPrivateGroup;
+    return mapped;
+}
+static void tbRecordRetry(OSStatus result) {
+    os_unfair_lock_lock(&tbKeyLock);tbKeyRetries++;
+    // Missing item and duplicate item are normal keychain lookup outcomes.
+    if(result==0||result==-25300||result==-25299)tbKeyRetryOK++;
+    tbKeyFailure=[NSString stringWithFormat:@"Private-group retry: %d",(int)result];
+    os_unfair_lock_unlock(&tbKeyLock);
+}
 static NSString *tbKeyFailure=@"No keychain failure observed";
 static void tbRecord(NSString *operation,CFDictionaryRef query,OSStatus result) {
     if(!query)return;
@@ -41,21 +73,35 @@ static void tbRecord(NSString *operation,CFDictionaryRef query,OSStatus result) 
     os_unfair_lock_unlock(&tbKeyLock);
 }
 static OSStatus tbCopyCall(CFDictionaryRef q,CFTypeRef *out) {
-    OSStatus r=tbCopy?tbCopy(q,out):-4;tbRecord(@"Read",q,r);return r;
+    OSStatus r=tbCopy?tbCopy(q,out):-4;tbRecord(@"Read",q,r);
+    NSDictionary *mapped=tbRetryQuery(q,r);
+    if(mapped){r=tbCopy((__bridge CFDictionaryRef)mapped,out);tbRecordRetry(r);}
+    return r;
 }
 static OSStatus tbAddCall(CFDictionaryRef q,CFTypeRef *out) {
-    OSStatus r=tbAdd?tbAdd(q,out):-4;tbRecord(@"Add",q,r);return r;
+    OSStatus r=tbAdd?tbAdd(q,out):-4;tbRecord(@"Add",q,r);
+    NSDictionary *mapped=tbRetryQuery(q,r);
+    if(mapped){r=tbAdd((__bridge CFDictionaryRef)mapped,out);tbRecordRetry(r);}
+    return r;
 }
 static OSStatus tbUpdateCall(CFDictionaryRef q,CFDictionaryRef attrs) {
-    OSStatus r=tbUpdate?tbUpdate(q,attrs):-4;tbRecord(@"Update",q,r);return r;
+    OSStatus r=tbUpdate?tbUpdate(q,attrs):-4;tbRecord(@"Update",q,r);
+    NSDictionary *mapped=tbRetryQuery(q,r);
+    if(mapped){r=tbUpdate((__bridge CFDictionaryRef)mapped,attrs);tbRecordRetry(r);}
+    return r;
 }
 static OSStatus tbDeleteCall(CFDictionaryRef q) {
-    OSStatus r=tbDelete?tbDelete(q):-4;tbRecord(@"Delete",q,r);return r;
+    OSStatus r=tbDelete?tbDelete(q):-4;tbRecord(@"Delete",q,r);
+    NSDictionary *mapped=tbRetryQuery(q,r);
+    if(mapped){r=tbDelete((__bridge CFDictionaryRef)mapped);tbRecordRetry(r);}
+    return r;
 }
 static NSString *tbKeyStatus() {
     os_unfair_lock_lock(&tbKeyLock);
-    NSString *s=[NSString stringWithFormat:@"Calls: %llu · missing entitlement: %llu\n%@",
-        (unsigned long long)tbKeyCalls,(unsigned long long)tbKeyDenied,tbKeyFailure];
+    NSString *s=[NSString stringWithFormat:@"Calls: %llu · denied: %llu\nPrivate group: %@\nRetries: %llu · accepted: %llu\n%@",
+        (unsigned long long)tbKeyCalls,(unsigned long long)tbKeyDenied,
+        tbPrivateGroup?@"available":@"unavailable",
+        (unsigned long long)tbKeyRetries,(unsigned long long)tbKeyRetryOK,tbKeyFailure];
     os_unfair_lock_unlock(&tbKeyLock);return s;
 }
 static void tbObserveKeychain(const mach_header *header,intptr_t slide) {
@@ -282,7 +328,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 @end
 @implementation TBNativeController
 - (void)viewDidLoad {
-    [super viewDidLoad];self.title=@"Timbre · Login Diagnostic 4";
+    [super viewDidLoad];self.title=@"Timbre · Login Storage Test 5";
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)];
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Add band" style:UIBarButtonItemStylePlain target:self action:@selector(addBand)];
     self.statusTimer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(refreshStatus) userInfo:nil repeats:YES];
@@ -381,6 +427,7 @@ __attribute__((constructor)) static void launchTimbreNative() {
         tbAdd=(TBKAdd)dlsym(RTLD_DEFAULT,"SecItemAdd");
         tbUpdate=(TBKUpdate)dlsym(RTLD_DEFAULT,"SecItemUpdate");
         tbDelete=(TBKDelete)dlsym(RTLD_DEFAULT,"SecItemDelete");
+        tbDiscoverPrivateGroup();
         _dyld_register_func_for_add_image(tbObserveKeychain);
         realSet=&AUGraphSetNodeInputCallback;realStart=&AUGraphStart;realDispose=&DisposeAUGraph;
         _dyld_register_func_for_add_image(addedImage);
