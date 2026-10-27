@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <complex>
 #include "fishhook.h"
 #include "../NativeDSP/TimbreDSP.hpp"
 
@@ -344,30 +345,93 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 }
 } // namespace
 
+
+@interface TBResponseView : UIView
+@end
+@implementation TBResponseView
+- (void)drawRect:(CGRect)rect {
+    CGRect a=CGRectInset(self.bounds,26,24);CGContextRef ctx=UIGraphicsGetCurrentContext();
+    NSDictionary *attrs=@{NSFontAttributeName:[UIFont systemFontOfSize:10],NSForegroundColorAttributeName:UIColor.secondaryLabelColor};
+    for(int db=-24;db<=24;db+=12){CGFloat y=CGRectGetMidY(a)-db*a.size.height/48;CGContextSetStrokeColorWithColor(ctx,UIColor.separatorColor.CGColor);CGContextMoveToPoint(ctx,a.origin.x,y);CGContextAddLineToPoint(ctx,CGRectGetMaxX(a),y);CGContextStrokePath(ctx);[[NSString stringWithFormat:@"%+d",db] drawAtPoint:CGPointMake(0,y-6) withAttributes:attrs];}
+    for(double f:{20.,100.,1000.,10000.,20000.}){CGFloat px=a.origin.x+std::log(f/20.)/std::log(1000.)*a.size.width;NSString *label=f>=1000?[NSString stringWithFormat:@"%.0fk",f/1000]:[NSString stringWithFormat:@"%.0f",f];[label drawAtPoint:CGPointMake(px-8,CGRectGetMaxY(a)+5) withAttributes:attrs];}
+    double rate=observedRate.load();if(rate<8000)rate=48000;
+    timbre::Coeffs coeff[MaxBands];int n=0;
+    for(int j=0;j<settings.count.load();j++){auto &b=settings.bands[j];if(!b.on.load())continue;try{coeff[n++]=timbre::coefficients({true,(timbre::FilterType)b.type.load(),b.hz.load(),b.gain.load(),b.q.load()},rate);}catch(...){}}
+    UIBezierPath *path=[UIBezierPath bezierPath];
+    for(int i=0;i<=200;i++){double f=20*std::pow(1000.,i/200.);auto z=std::polar(1.,-6.283185307179586*std::min(f,rate*0.499)/rate);double db=settings.preamp.load();
+        for(int j=0;j<n;j++){auto &k=coeff[j];db+=20*std::log10(std::max(std::abs((k.b0+k.b1*z+k.b2*z*z)/(1.+k.a1*z+k.a2*z*z)),1e-9));}
+        CGPoint p=CGPointMake(a.origin.x+i*a.size.width/200.,CGRectGetMidY(a)-std::clamp(db,-24.,24.)*a.size.height/48);if(i==0)[path moveToPoint:p];else[path addLineToPoint:p];}
+    [UIColor.systemIndigoColor setStroke];path.lineWidth=2.5;[path stroke];
+}
+@end
+@interface TBBandEditor : UITableViewController
+@property(nonatomic) NSInteger bandIndex;
+@end
+@implementation TBBandEditor
+- (void)viewDidLoad{[super viewDidLoad];self.title=[NSString stringWithFormat:@"Band %ld",(long)self.bandIndex+1];self.tableView.rowHeight=UITableViewAutomaticDimension;self.tableView.estimatedRowHeight=100;}
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section{return 5;}
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)idx{
+    auto &b=settings.bands[self.bandIndex];NSInteger r=idx.row;UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+    if(r==3){cell.textLabel.text=@"Filter";cell.detailTextLabel.text=@[@"Peak",@"Low shelf",@"High shelf",@"Low pass",@"High pass",@"Band pass",@"Notch",@"All pass"][std::clamp(b.type.load(),0,7)];cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;return cell;}
+    if(r==4){cell.textLabel.text=@"Enable band";UISwitch *sw=[UISwitch new];sw.on=b.on.load();[sw addTarget:self action:@selector(enabled:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=sw;return cell;}
+    UILabel *label=[UILabel new];label.font=[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];label.tag=10;label.text=r==0?[NSString stringWithFormat:@"Frequency · %.0f Hz",b.hz.load()]:r==1?[NSString stringWithFormat:@"Gain · %+.1f dB",b.gain.load()]:[NSString stringWithFormat:@"Q · %.2f",b.q.load()];
+    UISlider *slider=[UISlider new];slider.tag=r;slider.tintColor=UIColor.systemIndigoColor;slider.minimumValue=r==0?std::log10(20.f):r==1?-24:std::log10(0.05f);slider.maximumValue=r==0?std::log10(20000.f):r==1?12:std::log10(40.f);slider.value=r==0?std::log10(b.hz.load()):r==1?b.gain.load():std::log10(b.q.load());
+    [slider addTarget:self action:@selector(adjust:) forControlEvents:UIControlEventValueChanged];[slider addTarget:self action:@selector(save:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
+    UIStackView *stack=[[UIStackView alloc] initWithArrangedSubviews:@[label,slider]];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=12;stack.translatesAutoresizingMaskIntoConstraints=NO;[cell.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.leadingAnchor],[stack.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],[stack.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:18],[stack.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-18]]];return cell;
+}
+- (void)adjust:(UISlider *)slider{auto &b=settings.bands[self.bandIndex];float v=slider.value;if(slider.tag==0)b.hz=std::pow(10.f,v);else if(slider.tag==1)b.gain=v;else b.q=std::pow(10.f,v);settings.generation.fetch_add(1,std::memory_order_release);UILabel *label=[slider.superview viewWithTag:10];label.text=slider.tag==0?[NSString stringWithFormat:@"Frequency · %.0f Hz",b.hz.load()]:slider.tag==1?[NSString stringWithFormat:@"Gain · %+.1f dB",b.gain.load()]:[NSString stringWithFormat:@"Q · %.2f",b.q.load()];}
+- (void)save:(UISlider *)slider{saveSettings();}
+- (void)enabled:(UISwitch *)sw{settings.bands[self.bandIndex].on=sw.on;changed();}
+- (void)viewWillDisappear:(BOOL)animated{[super viewWillDisappear:animated];saveSettings();}
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)idx{
+    if(idx.row!=3)return;UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Filter type" message:nil preferredStyle:UIAlertControllerStyleActionSheet];NSArray *names=@[@"Peak",@"Low shelf",@"High shelf",@"Low pass",@"High pass",@"Band pass",@"Notch",@"All pass"];
+    for(int i=0;i<8;i++){int type=i;[a addAction:[UIAlertAction actionWithTitle:names[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){settings.bands[self.bandIndex].type=type;changed();[tv reloadData];}]];}
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.sourceView=[tv cellForRowAtIndexPath:idx];a.popoverPresentationController.sourceRect=[tv cellForRowAtIndexPath:idx].bounds;[self presentViewController:a animated:YES completion:nil];
+}
+@end
+
 @interface TBNativeController : UITableViewController
 @property(nonatomic,strong) NSTimer *statusTimer;
+@property(nonatomic,strong) UISegmentedControl *pages;
+@property(nonatomic,strong) TBResponseView *response;
 @end
 @implementation TBNativeController
 - (void)viewDidLoad {
-    [super viewDidLoad];self.title=@"Timbre · Login Diagnostic 6";
+    [super viewDidLoad];self.title=@"Timbre";
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)];
-    self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Add band" style:UIBarButtonItemStylePlain target:self action:@selector(addBand)];
+    self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Presets" style:UIBarButtonItemStylePlain target:self action:@selector(presets)];
+    self.view.tintColor=UIColor.systemIndigoColor;
+    self.pages=[[UISegmentedControl alloc] initWithItems:@[@"Equalizer",@"Effects",@"Diagnostics"]];self.pages.selectedSegmentIndex=0;[self.pages addTarget:self action:@selector(pageChanged) forControlEvents:UIControlEventValueChanged];
+    self.response=[TBResponseView new];self.response.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;self.response.layer.cornerRadius=18;[self pageChanged];
     self.statusTimer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(refreshStatus) userInfo:nil repeats:YES];
 }
 - (void)close {[self.statusTimer invalidate];self.statusTimer=nil;[self dismissViewControllerAnimated:YES completion:nil];}
 - (void)viewDidDisappear:(BOOL)animated {[super viewDidDisappear:animated];[self.statusTimer invalidate];self.statusTimer=nil;}
-- (void)refreshStatus {if(self.tableView.numberOfSections)[self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];}
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {return 4;}
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {return section==0?4:section==1?2:section==2?settings.count.load():6;}
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {return @[@"Playback diagnostics",@"Master",@"Parametric EQ · tap to edit",@"Effects"][section];}
+- (NSInteger)sourceSection:(NSInteger)section{return self.pages.selectedSegmentIndex==0?section+1:self.pages.selectedSegmentIndex==1?3:0;}
+- (void)pageChanged{UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,self.tableView.bounds.size.width,self.pages.selectedSegmentIndex==0?238:62)];self.pages.frame=CGRectMake(20,12,header.bounds.size.width-40,34);self.pages.autoresizingMask=UIViewAutoresizingFlexibleWidth;[header addSubview:self.pages];if(self.pages.selectedSegmentIndex==0){self.response.frame=CGRectMake(20,62,header.bounds.size.width-40,164);self.response.autoresizingMask=UIViewAutoresizingFlexibleWidth;[header addSubview:self.response];}self.tableView.tableHeaderView=header;[self.tableView reloadData];}
+- (void)viewWillAppear:(BOOL)animated{[super viewWillAppear:animated];[self.tableView reloadData];[self.response setNeedsDisplay];}
+- (void)viewDidLayoutSubviews{[super viewDidLayoutSubviews];UIView *h=self.tableView.tableHeaderView;if(h&&h.bounds.size.width!=self.tableView.bounds.size.width){CGRect f=h.frame;f.size.width=self.tableView.bounds.size.width;h.frame=f;self.tableView.tableHeaderView=h;}}
+- (void)refreshStatus{if(self.pages.selectedSegmentIndex==2&&!self.tableView.tracking&&!self.tableView.dragging)[self.tableView reloadData];[self.response setNeedsDisplay];}
+- (void)presets{
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"EQ presets" message:@"Replaces the current bands. Effects stay as configured." preferredStyle:UIAlertControllerStyleActionSheet];NSArray *names=@[@"Flat",@"Bass lift",@"Vocal focus",@"Treble lift"];
+    for(int i=0;i<4;i++){int preset=i;[a addAction:[UIAlertAction actionWithTitle:names[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        const float gains[4][10]={{0,0,0,0,0,0,0,0,0,0},{4,4,3,1,0,0,0,0,0,0},{-2,-2,-1,0,1,3,3,1,0,-1},{0,0,0,0,0,0,1,2,3,3}};
+        settings.count=10;for(int j=0;j<10;j++){auto &b=settings.bands[j];b.hz=Defaults[j];b.gain=gains[preset][j];b.q=1;b.type=0;b.on=true;}settings.preamp=preset==0?0:-6;changed();[self.tableView reloadData];[self.response setNeedsDisplay];
+    }]];}[a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.barButtonItem=self.navigationItem.leftBarButtonItem;[self presentViewController:a animated:YES completion:nil];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {return self.pages.selectedSegmentIndex==0?2:1;}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {section=[self sourceSection:section];return section==0?4:section==1?2:section==2?settings.count.load()+1:6;}
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {section=[self sourceSection:section];return @[@"Playback diagnostics",@"Master",@"Parametric EQ · tap to edit",@"Effects"][section];}
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    section=[self sourceSection:section];
     if(section==0)return @"Play a track, enable Timbre, then use the -12 dB test. A rising processed-frame count and an audible volume change establish that this playback route reaches Timbre. Unsupported routes remain unchanged.";
-    if(section==1)return @"Settings stay inside this app. A -1 dB limiter is applied while Timbre is enabled. Test starts bypassed.";
-    if(section==2)return @"Up to 64 bands. Swipe to delete. Preamp reduces clipping when boosting. This first test does not include head tracking or casting.";
+    if(section==1)return @"A -1 dB limiter protects the output while Timbre is enabled. Settings are saved in this app.";
+    if(section==2)return @"Tap a band for frequency, gain, Q and filter controls. Swipe to delete. Up to 64 bands.";
     return @"Spatial uses Timbre's existing stereo-to-binaural renderer. These effects require stereo at 96 kHz or below; EQ still supports higher rates.";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)index {
-    UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];NSInteger s=index.section,r=index.row;
+    UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];NSInteger s=[self sourceSection:index.section],r=index.row;
     if(s==0){
         if(r==3){cell.textLabel.text=@"Login storage diagnostics";cell.detailTextLabel.text=tbKeyStatus();cell.detailTextLabel.numberOfLines=0;}
         if(r==0){cell.textLabel.text=hookedImages.load()?@"Native audio engine detected":@"Waiting for native audio engine";cell.detailTextLabel.text=[NSString stringWithFormat:@"Registrations: %llu · callbacks: %llu",(unsigned long long)registrations.load(),(unsigned long long)callbacks.load()];}
@@ -375,6 +439,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
         if(r==2){cell.textLabel.text=@"Run -12 dB attenuation test";cell.textLabel.textColor=UIColor.systemBlueColor;cell.detailTextLabel.text=@"Enables Timbre with a clearly audible preamp cut";}
     } else if(s==1&&r==0){cell.textLabel.text=@"Enable Timbre";UISwitch *sw=[UISwitch new];sw.on=settings.on.load();sw.tag=100;[sw addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=sw;}
     else if(s==1){cell.textLabel.text=[NSString stringWithFormat:@"Preamp: %.1f dB",settings.preamp.load()];UISlider *slider=[[UISlider alloc] initWithFrame:CGRectMake(0,0,150,32)];slider.minimumValue=-30;slider.maximumValue=0;slider.value=settings.preamp.load();slider.tag=200;[slider addTarget:self action:@selector(slide:) forControlEvents:UIControlEventValueChanged];[slider addTarget:self action:@selector(slideEnd:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];cell.accessoryView=slider;}
+    else if(s==2&&r==settings.count.load()){cell.textLabel.text=@"＋ Add band";cell.textLabel.textColor=UIColor.systemIndigoColor;}
     else if(s==2){auto &b=settings.bands[r];cell.textLabel.text=[NSString stringWithFormat:@"%ld · %.0f Hz    %+.1f dB",(long)r+1,b.hz.load(),b.gain.load()];cell.detailTextLabel.text=[NSString stringWithFormat:@"Q %.2f · %@ · %@",b.q.load(),@[@"Peak",@"Low shelf",@"High shelf",@"Low pass",@"High pass",@"Band pass",@"Notch",@"All pass"][std::clamp(b.type.load(),0,7)],b.on.load()?@"On":@"Bypassed"];cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;}
     else if(s==3&&r<5){cell.textLabel.text=@[@"Compressor",@"Crossfeed",@"Immersive spatial",@"Reverb",@"Stereo width"][r];UISwitch *sw=[UISwitch new];sw.tag=101+r;std::atomic<bool> *v[]={&settings.comp,&settings.crossfeed,&settings.spatial,&settings.reverb,&settings.stereo};sw.on=v[r]->load();[sw addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=sw;}
     else {cell.textLabel.text=[NSString stringWithFormat:@"Width: %.0f%%",settings.width.load()*100];UISlider *slider=[[UISlider alloc] initWithFrame:CGRectMake(0,0,150,32)];slider.minimumValue=0;slider.maximumValue=2;slider.value=settings.width.load();slider.tag=201;[slider addTarget:self action:@selector(slide:) forControlEvents:UIControlEventValueChanged];[slider addTarget:self action:@selector(slideEnd:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];cell.accessoryView=slider;}
@@ -386,19 +451,13 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 - (void)addBand {int n=settings.count.load();if(n>=MaxBands)return;auto &b=settings.bands[n];b.hz=1000;b.gain=0;b.q=1;b.type=0;b.on=true;settings.count=n+1;changed();[self.tableView reloadData];}
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)index {
     [tableView deselectRowAtIndexPath:index animated:YES];
-    if(index.section==0&&index.row==2){settings.preamp=-12;settings.on=true;changed();[tableView reloadData];return;}
-    if(index.section!=2)return;int n=(int)index.row;auto &b=settings.bands[n];
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Edit band" message:@"Frequency (20-20000 Hz), gain (-24 to +12 dB), Q (0.05-40), type (0 peak, 1 low shelf, 2 high shelf, 3 low pass, 4 high pass, 5 band pass, 6 notch, 7 all pass)." preferredStyle:UIAlertControllerStyleAlert];
-    NSArray *values=@[[NSString stringWithFormat:@"%.0f",b.hz.load()],[NSString stringWithFormat:@"%.1f",b.gain.load()],[NSString stringWithFormat:@"%.2f",b.q.load()],[NSString stringWithFormat:@"%d",b.type.load()]];
-    for(int i=0;i<4;i++){NSString *v=values[i];[a addTextFieldWithConfigurationHandler:^(UITextField *t){t.text=v;t.keyboardType=UIKeyboardTypeNumbersAndPunctuation;}];}
-    [a addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-        auto &band=settings.bands[n];float f=[a.textFields[0].text floatValue],g=[a.textFields[1].text floatValue],q=[a.textFields[2].text floatValue];int t=[a.textFields[3].text intValue];
-        if(!std::isfinite(f)||!std::isfinite(g)||!std::isfinite(q))return;
-        band.hz=std::clamp(f,20.f,20000.f);band.gain=std::clamp(g,-24.f,12.f);band.q=std::clamp(q,0.05f,40.f);band.type=std::clamp(t,0,7);changed();[self.tableView reloadData];}]];
-    [a addAction:[UIAlertAction actionWithTitle:b.on.load()?@"Bypass band":@"Enable band" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){settings.bands[n].on=!settings.bands[n].on.load();changed();[self.tableView reloadData];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];[self presentViewController:a animated:YES completion:nil];
+    NSInteger section=[self sourceSection:index.section];
+    if(section==0&&index.row==2){settings.preamp=-12;settings.on=true;changed();[tableView reloadData];return;}
+    if(section!=2)return;if(index.row==settings.count.load()){[self addBand];return;}
+    TBBandEditor *editor=[[TBBandEditor alloc] initWithStyle:UITableViewStyleInsetGrouped];editor.bandIndex=index.row;[self.navigationController pushViewController:editor animated:YES];
 }
-- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)index {return index.section==2;}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)index {return [self sourceSection:index.section]==2&&index.row<settings.count.load();}
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)index {
     if(style!=UITableViewCellEditingStyleDelete)return;int n=settings.count.load();
     for(int i=(int)index.row;i<n-1;i++){auto &a=settings.bands[i],&b=settings.bands[i+1];a.hz=b.hz.load();a.gain=b.gain.load();a.q=b.q.load();a.type=b.type.load();a.on=b.on.load();}settings.count=n-1;changed();[tableView reloadData];
@@ -407,6 +466,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 
 @interface TBLauncher : NSObject
 @property(nonatomic,strong) UIButton *button;
+@property(nonatomic,weak) UINavigationController *editorNavigation;
 @end
 
 static UIWindow *TBNativeWindow(void) {
@@ -436,9 +496,10 @@ static UIWindow *TBNativeWindow(void) {
     if(!window||!window.rootViewController)return;
     if(!self.button){self.button=[UIButton buttonWithType:UIButtonTypeSystem];[self.button setTitle:@"Timbre" forState:UIControlStateNormal];self.button.backgroundColor=UIColor.systemIndigoColor;[self.button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.button.layer.cornerRadius=18;self.button.accessibilityLabel=@"Open Timbre equalizer";[self.button addTarget:self action:@selector(open) forControlEvents:UIControlEventTouchUpInside];}
     if(self.button.superview!=window)[window addSubview:self.button];
+    self.button.hidden=self.editorNavigation.presentingViewController!=nil;
     self.button.frame=CGRectMake(window.bounds.size.width-92,window.safeAreaInsets.top+8,82,36);[window bringSubviewToFront:self.button];
 }
-- (void)open {UIViewController *vc=self.button.window.rootViewController;while(vc.presentedViewController)vc=vc.presentedViewController;if([vc isKindOfClass:UINavigationController.class]&&[((UINavigationController *)vc).topViewController isKindOfClass:TBNativeController.class])return;TBNativeController *controller=[[TBNativeController alloc] initWithStyle:UITableViewStyleInsetGrouped];UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:controller];nav.modalInPresentation=YES;[vc presentViewController:nav animated:YES completion:nil];}
+- (void)open {UIViewController *vc=self.button.window.rootViewController;while(vc.presentedViewController)vc=vc.presentedViewController;if([vc isKindOfClass:UINavigationController.class]&&[((UINavigationController *)vc).topViewController isKindOfClass:TBNativeController.class])return;TBNativeController *controller=[[TBNativeController alloc] initWithStyle:UITableViewStyleInsetGrouped];UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:controller];nav.modalInPresentation=YES;self.editorNavigation=nav;self.button.hidden=YES;[vc presentViewController:nav animated:YES completion:nil];}
 @end
 
 __attribute__((constructor)) static void launchTimbreNative() {
