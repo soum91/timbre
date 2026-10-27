@@ -29,6 +29,15 @@ static os_unfair_lock tbKeyLock=OS_UNFAIR_LOCK_INIT;
 static uint64_t tbKeyCalls=0,tbKeyDenied=0,tbKeyRetries=0,tbKeyRetryOK=0;
 static NSString *tbKeyFailure=@"No keychain failure observed";
 static NSString *tbPrivateGroup=nil;
+static NSMutableArray<NSString *> *tbUnresolved=nil;
+static uint64_t tbRetrySuccess=0,tbRetryMissing=0,tbRetryDuplicate=0;
+static void tbKeepFailure(NSString *message) {
+    if(!tbUnresolved)tbUnresolved=[NSMutableArray array];
+    if(![tbUnresolved containsObject:message]) {
+        if(tbUnresolved.count>=8)[tbUnresolved removeObjectAtIndex:0];
+        [tbUnresolved addObject:message];
+    }
+}
 // Discover the default group granted to this signed app. The random, empty
 // probe is deleted immediately and contains no account or session information.
 static void tbDiscoverPrivateGroup() {
@@ -57,6 +66,10 @@ static void tbRecordRetry(OSStatus result) {
     os_unfair_lock_lock(&tbKeyLock);tbKeyRetries++;
     // Missing item and duplicate item are normal keychain lookup outcomes.
     if(result==0||result==-25300||result==-25299)tbKeyRetryOK++;
+    if(result==0)tbRetrySuccess++;
+    else if(result==-25300)tbRetryMissing++;
+    else if(result==-25299)tbRetryDuplicate++;
+    else tbKeepFailure([NSString stringWithFormat:@"Private-group retry failed: %d",(int)result]);
     tbKeyFailure=[NSString stringWithFormat:@"Private-group retry: %d",(int)result];
     os_unfair_lock_unlock(&tbKeyLock);
 }
@@ -69,6 +82,10 @@ static void tbRecord(NSString *operation,CFDictionaryRef query,OSStatus result) 
     os_unfair_lock_lock(&tbKeyLock);
     tbKeyCalls++;
     if(result==-34018)tbKeyDenied++;
+    if(result!=0 && result!=-25300 && result!=-25299 &&
+       !(result==-34018 && tbPrivateGroup &&
+         [name isEqual:@"J7P34ALZ5R.com.amazon.mp3.AmazonCloudPlayer"]))
+        tbKeepFailure([NSString stringWithFormat:@"%@: %d · %@",operation,(int)result,name]);
     if(result!=0 && result!=-25300 && result!=-25299)
         tbKeyFailure=[NSString stringWithFormat:@"%@: %d · %@",operation,(int)result,name];
     os_unfair_lock_unlock(&tbKeyLock);
@@ -99,10 +116,13 @@ static OSStatus tbDeleteCall(CFDictionaryRef q) {
 }
 static NSString *tbKeyStatus() {
     os_unfair_lock_lock(&tbKeyLock);
-    NSString *s=[NSString stringWithFormat:@"Calls: %llu · denied: %llu\nPrivate group: %@\nRetries: %llu · accepted: %llu\n%@",
+    NSString *s=[NSString stringWithFormat:@"Calls: %llu · denied: %llu\nPrivate group: %@\nRetry success: %llu · absent: %llu · duplicate: %llu\nUnresolved errors:\n%@\nLatest: %@",
         (unsigned long long)tbKeyCalls,(unsigned long long)tbKeyDenied,
         tbPrivateGroup?@"available":@"unavailable",
-        (unsigned long long)tbKeyRetries,(unsigned long long)tbKeyRetryOK,tbKeyFailure];
+        (unsigned long long)tbRetrySuccess,(unsigned long long)tbRetryMissing,
+        (unsigned long long)tbRetryDuplicate,
+        tbUnresolved.count?[tbUnresolved componentsJoinedByString:@"\n"]:@"None observed",
+        tbKeyFailure];
     os_unfair_lock_unlock(&tbKeyLock);return s;
 }
 static void tbObserveKeychain(const mach_header *header,intptr_t slide) {
@@ -329,7 +349,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 @end
 @implementation TBNativeController
 - (void)viewDidLoad {
-    [super viewDidLoad];self.title=@"Timbre · Login Storage Test 5";
+    [super viewDidLoad];self.title=@"Timbre · Login Diagnostic 6";
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)];
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Add band" style:UIBarButtonItemStylePlain target:self action:@selector(addBand)];
     self.statusTimer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(refreshStatus) userInfo:nil repeats:YES];
