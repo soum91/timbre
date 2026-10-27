@@ -10,6 +10,7 @@ private let panel = Color(red: 0.08, green: 0.085, blue: 0.10)
 @main
 struct TimbreWidgetBundle: WidgetBundle {
     var body: some Widget {
+        TimbreLockWidget()
         if #available(iOS 18.0, *) { TimbreEQControl(); TimbreSpatialControl(); TimbreReverbControl(); TimbrePresetControl(); TimbreGainUpControl(); TimbreGainDownControl() }
 
         NowPlayingWidget()
