@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.25",
+          "buildVersion": "25",
+          "date": "2026-10-27T01:39:38Z",
+          "localizedDescription": "- Run Shortcuts actions in the app instead of the widget extension (f723dfb)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-25/Timbre-1.0-build-25.ipa",
+          "size": 948816,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.24",
           "buildVersion": "24",
           "date": "2026-10-25T13:41:48Z",
@@ -137,11 +146,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.24",
-      "versionDate": "2026-10-25T13:41:48Z",
-      "versionDescription": "- Keep DSP controller available for background control intents (771364f)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-24/Timbre-1.0-build-24.ipa",
-      "size": 948817,
+      "version": "1.0.25",
+      "versionDate": "2026-10-27T01:39:38Z",
+      "versionDescription": "- Run Shortcuts actions in the app instead of the widget extension (f723dfb)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-25/Timbre-1.0-build-25.ipa",
+      "size": 948816,
       "appPermissions": {}
     }
   ],
