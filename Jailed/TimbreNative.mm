@@ -13,6 +13,66 @@
 #include "fishhook.h"
 #include "../NativeDSP/TimbreDSP.hpp"
 
+
+namespace {
+// Observe result codes and group names only. Never inspect keychain values,
+// account names, tokens, passwords, or returned items. Calls are unchanged.
+using TBKCopy=OSStatus(*)(CFDictionaryRef,CFTypeRef *);
+using TBKAdd=OSStatus(*)(CFDictionaryRef,CFTypeRef *);
+using TBKUpdate=OSStatus(*)(CFDictionaryRef,CFDictionaryRef);
+using TBKDelete=OSStatus(*)(CFDictionaryRef);
+static TBKCopy tbCopy=nullptr;
+static TBKAdd tbAdd=nullptr;
+static TBKUpdate tbUpdate=nullptr;
+static TBKDelete tbDelete=nullptr;
+static os_unfair_lock tbKeyLock=OS_UNFAIR_LOCK_INIT;
+static uint64_t tbKeyCalls=0,tbKeyDenied=0;
+static NSString *tbKeyFailure=@"No keychain failure observed";
+static void tbRecord(NSString *operation,CFDictionaryRef query,OSStatus result) {
+    if(!query)return;
+    NSDictionary *q=(__bridge NSDictionary *)query;
+    id group=q[@"agrp"];
+    NSString *name=[group isKindOfClass:NSString.class]?group:@"default group";
+    os_unfair_lock_lock(&tbKeyLock);
+    tbKeyCalls++;
+    if(result==-34018)tbKeyDenied++;
+    if(result!=0 && result!=-25300 && result!=-25299)
+        tbKeyFailure=[NSString stringWithFormat:@"%@: %d · %@",operation,(int)result,name];
+    os_unfair_lock_unlock(&tbKeyLock);
+}
+static OSStatus tbCopyCall(CFDictionaryRef q,CFTypeRef *out) {
+    OSStatus r=tbCopy?tbCopy(q,out):-4;tbRecord(@"Read",q,r);return r;
+}
+static OSStatus tbAddCall(CFDictionaryRef q,CFTypeRef *out) {
+    OSStatus r=tbAdd?tbAdd(q,out):-4;tbRecord(@"Add",q,r);return r;
+}
+static OSStatus tbUpdateCall(CFDictionaryRef q,CFDictionaryRef attrs) {
+    OSStatus r=tbUpdate?tbUpdate(q,attrs):-4;tbRecord(@"Update",q,r);return r;
+}
+static OSStatus tbDeleteCall(CFDictionaryRef q) {
+    OSStatus r=tbDelete?tbDelete(q):-4;tbRecord(@"Delete",q,r);return r;
+}
+static NSString *tbKeyStatus() {
+    os_unfair_lock_lock(&tbKeyLock);
+    NSString *s=[NSString stringWithFormat:@"Calls: %llu · missing entitlement: %llu\n%@",
+        (unsigned long long)tbKeyCalls,(unsigned long long)tbKeyDenied,tbKeyFailure];
+    os_unfair_lock_unlock(&tbKeyLock);return s;
+}
+static void tbObserveKeychain(const mach_header *header,intptr_t slide) {
+    if(!tbCopy||!tbAdd||!tbUpdate||!tbDelete)return;
+    Dl_info info{};if(!dladdr(header,&info)||!info.dli_fname)return;
+    if(!strstr(info.dli_fname,"/AmazonCloudPlayer.app/")||
+       strstr(info.dli_fname,"TimbreNative-FlareStore.dylib"))return;
+    rebinding hooks[]={
+        {"SecItemCopyMatching",(void *)tbCopyCall,nullptr},
+        {"SecItemAdd",(void *)tbAddCall,nullptr},
+        {"SecItemUpdate",(void *)tbUpdateCall,nullptr},
+        {"SecItemDelete",(void *)tbDeleteCall,nullptr}
+    };
+    rebind_symbols_image((void *)header,slide,hooks,4);
+}
+}
+
 // App-local DSP. No daemon injection, inline code patching, audio export or DRM hooks.
 namespace {
 constexpr int MaxBands=64, MaxStreams=12, Chunk=512;
@@ -222,7 +282,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 @end
 @implementation TBNativeController
 - (void)viewDidLoad {
-    [super viewDidLoad];self.title=@"Timbre · Native Test 3";
+    [super viewDidLoad];self.title=@"Timbre · Login Diagnostic 4";
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)];
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Add band" style:UIBarButtonItemStylePlain target:self action:@selector(addBand)];
     self.statusTimer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(refreshStatus) userInfo:nil repeats:YES];
@@ -231,7 +291,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 - (void)viewDidDisappear:(BOOL)animated {[super viewDidDisappear:animated];[self.statusTimer invalidate];self.statusTimer=nil;}
 - (void)refreshStatus {if(self.tableView.numberOfSections)[self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];}
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {return 4;}
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {return section==0?3:section==1?2:section==2?settings.count.load():6;}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {return section==0?4:section==1?2:section==2?settings.count.load():6;}
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {return @[@"Playback diagnostics",@"Master",@"Parametric EQ · tap to edit",@"Effects"][section];}
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if(section==0)return @"Play a track, enable Timbre, then use the -12 dB test. A rising processed-frame count and an audible volume change establish that this playback route reaches Timbre. Unsupported routes remain unchanged.";
@@ -242,6 +302,7 @@ static void addedImage(const mach_header *header,intptr_t slide) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)index {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];NSInteger s=index.section,r=index.row;
     if(s==0){
+        if(r==3){cell.textLabel.text=@"Login storage diagnostics";cell.detailTextLabel.text=tbKeyStatus();cell.detailTextLabel.numberOfLines=0;}
         if(r==0){cell.textLabel.text=hookedImages.load()?@"Native audio engine detected":@"Waiting for native audio engine";cell.detailTextLabel.text=[NSString stringWithFormat:@"Registrations: %llu · callbacks: %llu",(unsigned long long)registrations.load(),(unsigned long long)callbacks.load()];}
         if(r==1){cell.textLabel.text=[NSString stringWithFormat:@"Processed frames: %llu",(unsigned long long)processed.load()];cell.detailTextLabel.text=[NSString stringWithFormat:@"%.0f Hz · skipped: %llu · format reason: %d",observedRate.load(),(unsigned long long)rejected.load(),lastReject.load()];}
         if(r==2){cell.textLabel.text=@"Run -12 dB attenuation test";cell.textLabel.textColor=UIColor.systemBlueColor;cell.detailTextLabel.text=@"Enables Timbre with a clearly audible preamp cut";}
@@ -316,6 +377,11 @@ static UIWindow *TBNativeWindow(void) {
 __attribute__((constructor)) static void launchTimbreNative() {
     @autoreleasepool {
         loadSettings();
+        tbCopy=(TBKCopy)dlsym(RTLD_DEFAULT,"SecItemCopyMatching");
+        tbAdd=(TBKAdd)dlsym(RTLD_DEFAULT,"SecItemAdd");
+        tbUpdate=(TBKUpdate)dlsym(RTLD_DEFAULT,"SecItemUpdate");
+        tbDelete=(TBKDelete)dlsym(RTLD_DEFAULT,"SecItemDelete");
+        _dyld_register_func_for_add_image(tbObserveKeychain);
         realSet=&AUGraphSetNodeInputCallback;realStart=&AUGraphStart;realDispose=&DisposeAUGraph;
         _dyld_register_func_for_add_image(addedImage);
         dispatch_async(dispatch_get_main_queue(),^{static TBLauncher *launcher=[TBLauncher new];[launcher attach];[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer){[launcher attach];}];});
