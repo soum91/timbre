@@ -27,6 +27,7 @@ static TBKUpdate tbUpdate=nullptr;
 static TBKDelete tbDelete=nullptr;
 static os_unfair_lock tbKeyLock=OS_UNFAIR_LOCK_INIT;
 static uint64_t tbKeyCalls=0,tbKeyDenied=0,tbKeyRetries=0,tbKeyRetryOK=0;
+static NSString *tbKeyFailure=@"No keychain failure observed";
 static NSString *tbPrivateGroup=nil;
 // Discover the default group granted to this signed app. The random, empty
 // probe is deleted immediately and contains no account or session information.
@@ -59,7 +60,7 @@ static void tbRecordRetry(OSStatus result) {
     tbKeyFailure=[NSString stringWithFormat:@"Private-group retry: %d",(int)result];
     os_unfair_lock_unlock(&tbKeyLock);
 }
-static NSString *tbKeyFailure=@"No keychain failure observed";
+
 static void tbRecord(NSString *operation,CFDictionaryRef query,OSStatus result) {
     if(!query)return;
     NSDictionary *q=(__bridge NSDictionary *)query;
