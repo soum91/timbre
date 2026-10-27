@@ -29,6 +29,11 @@ struct TimbreQuickSnapshot: Codable {
     }
 }
 @available(iOS 17.0, *) struct TimbreQuickIntent: LiveActivityIntent {
+    #if WIDGET_EXTENSION
+    // The widget extension cannot be launched to run intents on this iOS, so
+    // Shortcuts must only see (and run) the copy inside the app.
+    static let isDiscoverable = false
+    #endif
     static var title: LocalizedStringResource = "Timbre Quick Action"
     @Parameter(title: "Command") var command: String
     init() { command = "eq" }
@@ -41,6 +46,11 @@ struct TimbreQuickSnapshot: Codable {
     }
 }
 @available(iOS 18.0, *) struct TimbreSwitchIntent: SetValueIntent, LiveActivityIntent {
+    #if WIDGET_EXTENSION
+    // The widget extension cannot be launched to run intents on this iOS, so
+    // Shortcuts must only see (and run) the copy inside the app.
+    static let isDiscoverable = false
+    #endif
     static var title: LocalizedStringResource = "Set Timbre Effect"
     @Parameter(title: "Effect") var effect: String
     @Parameter(title: "Enabled") var value: Bool
