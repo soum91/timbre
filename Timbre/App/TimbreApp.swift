@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import AppIntents
 
 @main
 struct TimbreApp: App {
@@ -83,5 +84,46 @@ struct ToastView: View {
                     if model.toast == t { withAnimation { model.toast = nil } }
                 }
         }
+    }
+}
+
+
+/// App-only actions run in the main process, not Timbre's widget extension.
+struct ToggleTimbreEQShortcutIntent: AppIntent {
+    static var title: LocalizedStringResource = "Toggle Timbre EQ"
+    func perform() async throws -> some IntentResult {
+        await CommandBus.send("eq")
+        return .result()
+    }
+}
+struct ToggleTimbreSpatialShortcutIntent: AppIntent {
+    static var title: LocalizedStringResource = "Toggle Spatial Audio"
+    func perform() async throws -> some IntentResult {
+        let enabled = TimbreQuickSnapshot.load().spatial
+        await CommandBus.send(enabled ? "spatial:off" : "spatial:on")
+        return .result()
+    }
+}
+struct ToggleTimbreReverbShortcutIntent: AppIntent {
+    static var title: LocalizedStringResource = "Toggle Reverb"
+    func perform() async throws -> some IntentResult {
+        let enabled = TimbreQuickSnapshot.load().reverb
+        await CommandBus.send(enabled ? "reverb:off" : "reverb:on")
+        return .result()
+    }
+}
+struct TimbreShortcuts: AppShortcutsProvider {
+    static var shortcutTileColor: ShortcutTileColor = .orange
+
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: ToggleTimbreEQShortcutIntent(), phrases: [
+            "Toggle equalizer in \(.applicationName)",
+        ], shortTitle: "EQ Switch", systemImageName: "slider.vertical.3")
+        AppShortcut(intent: ToggleTimbreSpatialShortcutIntent(), phrases: [
+            "Toggle spatial audio in \(.applicationName)",
+        ], shortTitle: "Spatial Audio", systemImageName: "waveform")
+        AppShortcut(intent: ToggleTimbreReverbShortcutIntent(), phrases: [
+            "Toggle reverb in \(.applicationName)",
+        ], shortTitle: "Reverb", systemImageName: "waveform.path")
     }
 }
