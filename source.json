@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.27",
+          "buildVersion": "27",
+          "date": "2026-10-27T04:44:48Z",
+          "localizedDescription": "- Expose one-tap EQ, spatial and reverb Shortcuts for Control Center (890b0d0)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-27/Timbre-1.0-build-27.ipa",
+          "size": 972576,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.26",
           "buildVersion": "26",
           "date": "2026-10-27T01:49:01Z",
@@ -155,11 +164,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.26",
-      "versionDate": "2026-10-27T01:49:01Z",
-      "versionDescription": "- Add a read-only Lock Screen status widget (43e7390)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-26/Timbre-1.0-build-26.ipa",
-      "size": 962900,
+      "version": "1.0.27",
+      "versionDate": "2026-10-27T04:44:48Z",
+      "versionDescription": "- Expose one-tap EQ, spatial and reverb Shortcuts for Control Center (890b0d0)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-27/Timbre-1.0-build-27.ipa",
+      "size": 972576,
       "appPermissions": {}
     }
   ],
