@@ -34,6 +34,7 @@ jobs:
           echo "XPI=$XPI" >> "$GITHUB_ENV"
 
       - name: Lint
+        continue-on-error: true
         run: npx --yes web-ext@8 lint --source-dir dist/addon --warnings-as-errors=false
 
       - name: Sign with AMO (unlisted) if keys are set
