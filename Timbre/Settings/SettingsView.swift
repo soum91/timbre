@@ -52,7 +52,7 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
+                    LabeledContent("Installed version", value: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown"))")
                     Text("Timbre EQs audio from web players through Web Audio inside WebKit. Streams protected with DRM (FairPlay/EME) can't be processed by any browser-based EQ.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
