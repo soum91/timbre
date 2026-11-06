@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.29",
+          "buildVersion": "29",
+          "date": "2026-11-06T20:41:31Z",
+          "localizedDescription": "- Enforce visible installed version/build across app releases (547e66e)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-29/Timbre-1.0-build-29.ipa",
+          "size": 972721,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.28",
           "buildVersion": "28",
           "date": "2026-11-06T20:18:10Z",
@@ -173,11 +182,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.28",
-      "versionDate": "2026-11-06T20:18:10Z",
-      "versionDescription": "- Show actual installed app version and build in UI (274cddc)\n- ci: keep add-on release running when optional lint fails (5462148)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-28/Timbre-1.0-build-28.ipa",
-      "size": 972632,
+      "version": "1.0.29",
+      "versionDate": "2026-11-06T20:41:31Z",
+      "versionDescription": "- Enforce visible installed version/build across app releases (547e66e)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-29/Timbre-1.0-build-29.ipa",
+      "size": 972721,
       "appPermissions": {}
     }
   ],
