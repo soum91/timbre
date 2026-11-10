@@ -20,6 +20,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.0.30",
+          "buildVersion": "30",
+          "date": "2026-11-10T08:08:57Z",
+          "localizedDescription": "- Enforce pseudonymous author metadata and owner privacy (9791ae0)\n- docs: require verified diagnostic exports [skip ci] (1fc04c6)\n- docs: require verified diagnostic exports [skip ci] (08127fe)\n- docs: require verified diagnostics Copy, Share and Files export [skip ci] (66eff1e)\n- docs: require verified diagnostics Copy, Share and Files export [skip ci] (6399240)\n- ci: separate release tracks when deriving factual changes [skip ci] (9dfccd2)\n- ci: reconcile bot-created releases with factual notes [skip ci] (1308106)\n- ci: verify and record actual release changes [skip ci] (51f3916)\n- docs: require evidence-based release changelog [skip ci] (f0cba45)\n- docs: initialize factual release changelog [skip ci] (60dea1e)",
+          "downloadURL": "https://github.com/soum91/timbre/releases/download/build-30/Timbre-1.0-build-30.ipa",
+          "size": 972603,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.0.29",
           "buildVersion": "29",
           "date": "2026-11-06T20:41:31Z",
@@ -182,11 +191,11 @@
           "minOSVersion": "16.0"
         }
       ],
-      "version": "1.0.29",
-      "versionDate": "2026-11-06T20:41:31Z",
-      "versionDescription": "- Enforce visible installed version/build across app releases (547e66e)",
-      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-29/Timbre-1.0-build-29.ipa",
-      "size": 972721,
+      "version": "1.0.30",
+      "versionDate": "2026-11-10T08:08:57Z",
+      "versionDescription": "- Enforce pseudonymous author metadata and owner privacy (9791ae0)\n- docs: require verified diagnostic exports [skip ci] (1fc04c6)\n- docs: require verified diagnostic exports [skip ci] (08127fe)\n- docs: require verified diagnostics Copy, Share and Files export [skip ci] (66eff1e)\n- docs: require verified diagnostics Copy, Share and Files export [skip ci] (6399240)\n- ci: separate release tracks when deriving factual changes [skip ci] (9dfccd2)\n- ci: reconcile bot-created releases with factual notes [skip ci] (1308106)\n- ci: verify and record actual release changes [skip ci] (51f3916)\n- docs: require evidence-based release changelog [skip ci] (f0cba45)\n- docs: initialize factual release changelog [skip ci] (60dea1e)",
+      "downloadURL": "https://github.com/soum91/timbre/releases/download/build-30/Timbre-1.0-build-30.ipa",
+      "size": 972603,
       "appPermissions": {}
     }
   ],
